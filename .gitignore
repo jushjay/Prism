@@ -1,0 +1,47 @@
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Runtime state and local data
+data/
+local/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.wal
+*.shm
+
+# Logs and audit output
+*.log
+*.jsonl
+logs/
+
+# Secrets and credentials
+auth.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.crt
+*.csr
+id_rsa
+id_ed25519
+
+# Build outputs and dependencies
+server/prism
+server/vibe-coding-api
+web/dist
+web/node_modules
+web/.turbopack
+web/.mfsu
+web/src/.umi
+web/src/.umi-production
+
+# Local deployment scripts or machine-specific overrides
+deploy/
+deploy.sh
