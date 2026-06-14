@@ -1,0 +1,69 @@
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.chartToolbar {
+  justify-content: flex-end;
+
+  :global(.ant-picker) {
+    min-width: 280px;
+  }
+}
+
+.summaryCard {
+  :global(.ant-pro-card) {
+    height: 100%;
+  }
+
+  :global(.ant-pro-card-body) {
+    padding: 16px 18px;
+  }
+
+  :global(.ant-statistic) {
+    line-height: 1.2;
+  }
+
+  :global(.ant-statistic-content) {
+    font-size: 26px;
+  }
+
+  :global(.ant-statistic-content-suffix) {
+    font-size: 14px;
+  }
+
+  :global(.ant-statistic-title) {
+    margin-bottom: 6px;
+  }
+}
+
+@media (min-width: 576px) {
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 992px) {
+  .summaryGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1200px) {
+  .summaryGrid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .chartToolbar {
+    width: 100%;
+    justify-content: flex-start;
+
+    :global(.ant-picker) {
+      min-width: 0;
+      width: 100%;
+    }
+  }
+}
