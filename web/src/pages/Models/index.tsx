@@ -178,6 +178,16 @@ const ModelsPage: React.FC = () => {
       render: (_, record) => <Tag color="blue">{record.target_model}</Tag>,
     },
     {
+      title: '思考强度',
+      dataIndex: 'reasoning_effort',
+      render: (_, record) =>
+        record.reasoning_effort ? (
+          <Tag color="purple">{record.reasoning_effort}</Tag>
+        ) : (
+          '-'
+        ),
+    },
+    {
       title: '作用域',
       dataIndex: 'apply_global',
       render: (_, record) =>
@@ -357,6 +367,7 @@ const ModelsPage: React.FC = () => {
             ? {
                 modelName: editingMapping.model_name,
                 targetModel: editingMapping.target_model,
+                reasoningEffort: editingMapping.reasoning_effort,
                 applyGlobal: editingMapping.apply_global,
                 accountId: editingMapping.account_id,
               }
@@ -367,6 +378,7 @@ const ModelsPage: React.FC = () => {
             recordId: editingMapping?.record_id,
             modelName: values.modelName,
             targetModel: values.targetModel,
+            reasoningEffort: values.reasoningEffort,
             applyGlobal: values.applyGlobal,
             accountId: values.accountId,
           });
@@ -387,6 +399,18 @@ const ModelsPage: React.FC = () => {
           label="目标模型"
           rules={[{ required: true, message: '请输入目标模型 ID' }]}
           extra="目标模型来自账号模型目录中的 model_id。支持直接输入。"
+        />
+        <ProFormSelect
+          name="reasoningEffort"
+          label="思考强度"
+          allowClear
+          options={[
+            { label: 'low', value: 'low' },
+            { label: 'medium', value: 'medium' },
+            { label: 'high', value: 'high' },
+            { label: 'xhigh', value: 'xhigh' },
+          ]}
+          extra="可选。为空时沿用请求显式传参或系统默认值。"
         />
         <ProFormSwitch name="applyGlobal" label="全局生效" />
         <ProFormDependency name={['applyGlobal']}>
