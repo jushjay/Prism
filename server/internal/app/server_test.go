@@ -1164,6 +1164,318 @@ func TestHandleChatCompletionsPreservesPreviousResponseIDForCustomResponses(t *t
 	}
 }
 
+func TestHandleChatCompletionsAppliesMappedReasoningEffortWhenRequestDoesNotSpecifyOne(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	sqliteStore, err := store.NewSQLiteStore(filepath.Join(dir, "state.db"), dir)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	pool, err := auth.NewAccountPool(
+		filepath.Join(dir, "accounts.json"),
+		sqliteStore,
+		config.AuthConfig{},
+	)
+	if err != nil {
+		t.Fatalf("NewAccountPool() error = %v", err)
+	}
+	account, err := pool.AddCustomAccount(auth.CustomAccountInput{
+		Label:              "reasoning",
+		CustomBaseURL:      "https://example.invalid",
+		CustomAPIKey:       "key",
+		CustomEndpointType: "responses",
+		Enabled:            true,
+	})
+	if err != nil {
+		t.Fatalf("AddCustomAccount() error = %v", err)
+	}
+
+	var upstreamRequests []codex.ResponsesRequest
+	customUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			var payload codex.ResponsesRequest
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode custom request: %v", err)
+			}
+			upstreamRequests = append(upstreamRequests, payload)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+			_, _ = w.Write([]byte(`data: {"delta":"ok"}` + "\n\n"))
+			_, _ = w.Write([]byte("event: response.completed\n"))
+			_, _ = w.Write([]byte(`data: {"response":{"id":"resp_1","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}` + "\n\n"))
+		default:
+			t.Fatalf("unexpected custom upstream path %q", r.URL.Path)
+		}
+	}))
+	defer customUpstream.Close()
+
+	account.CustomBaseURL = customUpstream.URL
+	if err := pool.ReplaceAccount(account); err != nil {
+		t.Fatalf("ReplaceAccount() error = %v", err)
+	}
+
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	if _, err := sqliteStore.DB().Exec(`
+		INSERT INTO custom_account_models (account_id, model_id, display_name, model_object, owned_by, created_unix, source_payload, fetched_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, account.ID, "gpt-5.4", "GPT-5.4", "model", "openai", now.Unix(), `{}`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert custom_account_models: %v", err)
+	}
+	if _, err := sqliteStore.DB().Exec(`
+		INSERT INTO custom_account_model_sync_state (account_id, fetched_at, expires_at, last_error, updated_at)
+		VALUES (?, ?, ?, '', ?)
+	`, account.ID, now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert custom_account_model_sync_state: %v", err)
+	}
+
+	client, err := codex.NewClient(config.Config{
+		API: config.APIConfig{
+			BaseURL: "https://chatgpt.example.test/backend-api",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	modelService, err := models.NewService(
+		config.Config{
+			Model: config.ModelConfig{
+				DefaultModel: "mapped-chat",
+			},
+			Storage: config.StorageConfig{
+				ModelCacheFile:    filepath.Join(dir, "model-cache.json"),
+				ManualModelsFile:  filepath.Join(dir, "manual-models.json"),
+				ModelMappingsFile: filepath.Join(dir, "model-mappings.json"),
+			},
+		},
+		models.Catalog{},
+		pool,
+		client,
+		nil,
+		sqliteStore.DB(),
+		sqliteStore,
+	)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	if _, err := modelService.UpsertModelMapping(models.ModelMappingInput{
+		ModelName:       "mapped-chat",
+		TargetModel:     "gpt-5.4",
+		ReasoningEffort: "high",
+		ApplyGlobal:     true,
+	}); err != nil {
+		t.Fatalf("UpsertModelMapping() error = %v", err)
+	}
+
+	securityService, err := security.NewService(sqliteStore.DB())
+	if err != nil {
+		t.Fatalf("NewService() security error = %v", err)
+	}
+	usageService, err := usage.NewService(config.Config{}, sqliteStore.DB(), sqliteStore)
+	if err != nil {
+		t.Fatalf("NewService() usage error = %v", err)
+	}
+	requestLogService, err := requestlog.NewService(sqliteStore.DB())
+	if err != nil {
+		t.Fatalf("NewService() requestlog error = %v", err)
+	}
+	server := &Server{
+		cfg: config.Config{
+			Server: config.ServerConfig{
+				ProxyAPIKey: "proxy-key",
+			},
+			Model: config.ModelConfig{
+				DefaultModel:           "mapped-chat",
+				DefaultReasoningEffort: "medium",
+			},
+		},
+		engine:     gin.New(),
+		accounts:   pool,
+		codex:      client,
+		models:     modelService,
+		security:   securityService,
+		usage:      usageService,
+		requestLog: requestLogService,
+		affinity:   affinity.NewStore(),
+	}
+	server.engine.Use(gin.Recovery())
+	server.engine.POST("/v1/chat/completions", server.requireAPIKey(), server.handleChatCompletions)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"mapped-chat","messages":[{"role":"user","content":"hi"}],"stream":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer proxy-key")
+	server.engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(upstreamRequests) != 1 {
+		t.Fatalf("expected 1 upstream request, got %d", len(upstreamRequests))
+	}
+	if upstreamRequests[0].Model != "gpt-5.4" {
+		t.Fatalf("expected mapped upstream model gpt-5.4, got %q", upstreamRequests[0].Model)
+	}
+	if upstreamRequests[0].Reasoning == nil || upstreamRequests[0].Reasoning.Effort != "high" {
+		t.Fatalf("expected mapped reasoning effort high, got %+v", upstreamRequests[0].Reasoning)
+	}
+}
+
+func TestHandleChatCompletionsDoesNotOverrideExplicitReasoningEffort(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	sqliteStore, err := store.NewSQLiteStore(filepath.Join(dir, "state.db"), dir)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	pool, err := auth.NewAccountPool(
+		filepath.Join(dir, "accounts.json"),
+		sqliteStore,
+		config.AuthConfig{},
+	)
+	if err != nil {
+		t.Fatalf("NewAccountPool() error = %v", err)
+	}
+	account, err := pool.AddCustomAccount(auth.CustomAccountInput{
+		Label:              "reasoning-explicit",
+		CustomBaseURL:      "https://example.invalid",
+		CustomAPIKey:       "key",
+		CustomEndpointType: "responses",
+		Enabled:            true,
+	})
+	if err != nil {
+		t.Fatalf("AddCustomAccount() error = %v", err)
+	}
+
+	var upstreamRequest codex.ResponsesRequest
+	customUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("unexpected custom upstream path %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&upstreamRequest); err != nil {
+			t.Fatalf("decode custom request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"delta":"ok"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"response":{"id":"resp_1","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}` + "\n\n"))
+	}))
+	defer customUpstream.Close()
+
+	account.CustomBaseURL = customUpstream.URL
+	if err := pool.ReplaceAccount(account); err != nil {
+		t.Fatalf("ReplaceAccount() error = %v", err)
+	}
+
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	if _, err := sqliteStore.DB().Exec(`
+		INSERT INTO custom_account_models (account_id, model_id, display_name, model_object, owned_by, created_unix, source_payload, fetched_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, account.ID, "gpt-5.4", "GPT-5.4", "model", "openai", now.Unix(), `{}`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert custom_account_models: %v", err)
+	}
+	if _, err := sqliteStore.DB().Exec(`
+		INSERT INTO custom_account_model_sync_state (account_id, fetched_at, expires_at, last_error, updated_at)
+		VALUES (?, ?, ?, '', ?)
+	`, account.ID, now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert custom_account_model_sync_state: %v", err)
+	}
+
+	client, err := codex.NewClient(config.Config{
+		API: config.APIConfig{
+			BaseURL: "https://chatgpt.example.test/backend-api",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	modelService, err := models.NewService(
+		config.Config{
+			Model: config.ModelConfig{
+				DefaultModel: "mapped-chat",
+			},
+			Storage: config.StorageConfig{
+				ModelCacheFile:    filepath.Join(dir, "model-cache.json"),
+				ManualModelsFile:  filepath.Join(dir, "manual-models.json"),
+				ModelMappingsFile: filepath.Join(dir, "model-mappings.json"),
+			},
+		},
+		models.Catalog{},
+		pool,
+		client,
+		nil,
+		sqliteStore.DB(),
+		sqliteStore,
+	)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	if _, err := modelService.UpsertModelMapping(models.ModelMappingInput{
+		ModelName:       "mapped-chat",
+		TargetModel:     "gpt-5.4",
+		ReasoningEffort: "high",
+		ApplyGlobal:     true,
+	}); err != nil {
+		t.Fatalf("UpsertModelMapping() error = %v", err)
+	}
+
+	securityService, err := security.NewService(sqliteStore.DB())
+	if err != nil {
+		t.Fatalf("NewService() security error = %v", err)
+	}
+	usageService, err := usage.NewService(config.Config{}, sqliteStore.DB(), sqliteStore)
+	if err != nil {
+		t.Fatalf("NewService() usage error = %v", err)
+	}
+	requestLogService, err := requestlog.NewService(sqliteStore.DB())
+	if err != nil {
+		t.Fatalf("NewService() requestlog error = %v", err)
+	}
+	server := &Server{
+		cfg: config.Config{
+			Server: config.ServerConfig{
+				ProxyAPIKey: "proxy-key",
+			},
+			Model: config.ModelConfig{
+				DefaultModel:           "mapped-chat",
+				DefaultReasoningEffort: "medium",
+			},
+		},
+		engine:     gin.New(),
+		accounts:   pool,
+		codex:      client,
+		models:     modelService,
+		security:   securityService,
+		usage:      usageService,
+		requestLog: requestLogService,
+		affinity:   affinity.NewStore(),
+	}
+	server.engine.Use(gin.Recovery())
+	server.engine.POST("/v1/chat/completions", server.requireAPIKey(), server.handleChatCompletions)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"mapped-chat","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low","stream":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer proxy-key")
+	server.engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamRequest.Reasoning == nil || upstreamRequest.Reasoning.Effort != "low" {
+		t.Fatalf("expected explicit reasoning effort low to win, got %+v", upstreamRequest.Reasoning)
+	}
+}
+
 func TestHandleResponsesReturnsModelNotFoundWhenNoSyncedAccountSupportsModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

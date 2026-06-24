@@ -400,6 +400,7 @@ declare namespace Prism {
     record_id: string;
     model_name: string;
     target_model: string;
+    reasoning_effort?: string;
     apply_global: boolean;
     account_id?: string;
     account_email?: string;
@@ -411,6 +412,7 @@ declare namespace Prism {
     recordId?: string;
     modelName: string;
     targetModel: string;
+    reasoningEffort?: string;
     applyGlobal: boolean;
     accountId?: string;
   }

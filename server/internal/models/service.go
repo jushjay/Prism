@@ -60,22 +60,29 @@ type manualState struct {
 }
 
 type ModelMappingRecord struct {
-	RecordID     string    `json:"record_id"`
-	ModelName    string    `json:"model_name"`
-	TargetModel  string    `json:"target_model"`
-	ApplyGlobal  bool      `json:"apply_global"`
-	AccountID    string    `json:"account_id,omitempty"`
-	AccountEmail string    `json:"account_email,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	RecordID        string    `json:"record_id"`
+	ModelName       string    `json:"model_name"`
+	TargetModel     string    `json:"target_model"`
+	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
+	ApplyGlobal     bool      `json:"apply_global"`
+	AccountID       string    `json:"account_id,omitempty"`
+	AccountEmail    string    `json:"account_email,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type ModelMappingInput struct {
-	RecordID    string
-	ModelName   string
-	TargetModel string
-	ApplyGlobal bool
-	AccountID   string
+	RecordID        string
+	ModelName       string
+	TargetModel     string
+	ReasoningEffort string
+	ApplyGlobal     bool
+	AccountID       string
+}
+
+type ResolvedMapping struct {
+	TargetModel     string
+	ReasoningEffort string
 }
 
 type mappingsState struct {
@@ -337,6 +344,7 @@ func (s *Service) UpsertModelMapping(input ModelMappingInput) (ModelMappingRecor
 	recordID := strings.TrimSpace(input.RecordID)
 	modelName := strings.TrimSpace(input.ModelName)
 	targetModel := strings.TrimSpace(input.TargetModel)
+	reasoningEffort := strings.TrimSpace(input.ReasoningEffort)
 	accountID := strings.TrimSpace(input.AccountID)
 	if modelName == "" {
 		return ModelMappingRecord{}, errors.New("model name is required")
@@ -349,12 +357,13 @@ func (s *Service) UpsertModelMapping(input ModelMappingInput) (ModelMappingRecor
 	}
 
 	record := ModelMappingRecord{
-		RecordID:    recordID,
-		ModelName:   modelName,
-		TargetModel: targetModel,
-		ApplyGlobal: input.ApplyGlobal,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		RecordID:        recordID,
+		ModelName:       modelName,
+		TargetModel:     targetModel,
+		ReasoningEffort: reasoningEffort,
+		ApplyGlobal:     input.ApplyGlobal,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if !input.ApplyGlobal {
 		account, ok := s.accounts.Get(accountID)
@@ -528,9 +537,13 @@ func (s *Service) GlobalCatalog() Catalog {
 }
 
 func (s *Service) ResolveMappedModelID(modelID, accountID string) string {
+	return s.ResolveMapping(modelID, accountID).TargetModel
+}
+
+func (s *Service) ResolveMapping(modelID, accountID string) ResolvedMapping {
 	requested := strings.TrimSpace(modelID)
 	if requested == "" {
-		return ""
+		return ResolvedMapping{}
 	}
 	scopedAccountID := strings.TrimSpace(accountID)
 
@@ -541,7 +554,10 @@ func (s *Service) ResolveMappedModelID(modelID, accountID string) string {
 			continue
 		}
 		if item.ModelName == requested {
-			return item.TargetModel
+			return ResolvedMapping{
+				TargetModel:     item.TargetModel,
+				ReasoningEffort: item.ReasoningEffort,
+			}
 		}
 	}
 	for _, item := range s.mappings {
@@ -549,10 +565,13 @@ func (s *Service) ResolveMappedModelID(modelID, accountID string) string {
 			continue
 		}
 		if item.ModelName == requested {
-			return item.TargetModel
+			return ResolvedMapping{
+				TargetModel:     item.TargetModel,
+				ReasoningEffort: item.ReasoningEffort,
+			}
 		}
 	}
-	return s.static.ResolveUpstreamID(requested)
+	return ResolvedMapping{TargetModel: s.static.ResolveUpstreamID(requested)}
 }
 
 func (s *Service) AccountSupportsModel(account auth.Account, modelID string) (bool, bool) {

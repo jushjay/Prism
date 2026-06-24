@@ -808,6 +808,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 	if strings.TrimSpace(request.Model) == "" {
 		request.Model = s.cfg.Model.DefaultModel
 	}
+	hasExplicitReasoning := request.Reasoning != nil && strings.TrimSpace(request.Reasoning.Effort) != ""
 	preferredAccountID := ""
 	if request.PreviousResponseID != "" {
 		preferredAccountID = s.affinity.AccountForResponse(request.PreviousResponseID)
@@ -858,7 +859,9 @@ func (s *Server) handleResponses(c *gin.Context) {
 		}
 		attemptMetrics := newRequestAttemptMetrics()
 		upstreamRequest := request
-		upstreamRequest.Model = s.models.ResolveMappedModelID(request.Model, account.ID)
+		resolvedMapping := s.models.ResolveMapping(request.Model, account.ID)
+		upstreamRequest.Model = resolvedMapping.TargetModel
+		applyMappedReasoningEffort(&upstreamRequest, resolvedMapping.ReasoningEffort, hasExplicitReasoning)
 		if supported, known := s.models.AccountSupportsModel(account, upstreamRequest.Model); known && !supported {
 			s.accounts.Release(account.ID)
 			excludedAccountIDs = append(excludedAccountIDs, account.ID)
@@ -1058,6 +1061,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	}
 	codexRequest := chatRequest.CodexRequest
 	tupleSchema := chatRequest.TupleSchema
+	hasExplicitReasoning := chatRequest.HasExplicitReasoning
 	preferredAccountID := ""
 	if codexRequest.PreviousResponseID != "" {
 		preferredAccountID = s.affinity.AccountForResponse(codexRequest.PreviousResponseID)
@@ -1108,7 +1112,9 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		}
 		attemptMetrics := newRequestAttemptMetrics()
 		upstreamCodexRequest := codexRequest
-		upstreamCodexRequest.Model = s.models.ResolveMappedModelID(codexRequest.Model, account.ID)
+		resolvedMapping := s.models.ResolveMapping(codexRequest.Model, account.ID)
+		upstreamCodexRequest.Model = resolvedMapping.TargetModel
+		applyMappedReasoningEffort(&upstreamCodexRequest, resolvedMapping.ReasoningEffort, hasExplicitReasoning)
 		if supported, known := s.models.AccountSupportsModel(account, upstreamCodexRequest.Model); known && !supported {
 			s.accounts.Release(account.ID)
 			excludedAccountIDs = append(excludedAccountIDs, account.ID)
@@ -1829,22 +1835,24 @@ func (s *Server) handleAdminUpsertModelMapping(c *gin.Context) {
 		return
 	}
 	var payload struct {
-		RecordID    string `json:"recordId"`
-		ModelName   string `json:"modelName"`
-		TargetModel string `json:"targetModel"`
-		ApplyGlobal bool   `json:"applyGlobal"`
-		AccountID   string `json:"accountId"`
+		RecordID        string `json:"recordId"`
+		ModelName       string `json:"modelName"`
+		TargetModel     string `json:"targetModel"`
+		ReasoningEffort string `json:"reasoningEffort"`
+		ApplyGlobal     bool   `json:"applyGlobal"`
+		AccountID       string `json:"accountId"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	record, err := s.models.UpsertModelMapping(models.ModelMappingInput{
-		RecordID:    payload.RecordID,
-		ModelName:   payload.ModelName,
-		TargetModel: payload.TargetModel,
-		ApplyGlobal: payload.ApplyGlobal,
-		AccountID:   payload.AccountID,
+		RecordID:        payload.RecordID,
+		ModelName:       payload.ModelName,
+		TargetModel:     payload.TargetModel,
+		ReasoningEffort: payload.ReasoningEffort,
+		ApplyGlobal:     payload.ApplyGlobal,
+		AccountID:       payload.AccountID,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1858,21 +1866,23 @@ func (s *Server) handleAdminUpdateModelMapping(c *gin.Context) {
 		return
 	}
 	var payload struct {
-		ModelName   string `json:"modelName"`
-		TargetModel string `json:"targetModel"`
-		ApplyGlobal bool   `json:"applyGlobal"`
-		AccountID   string `json:"accountId"`
+		ModelName       string `json:"modelName"`
+		TargetModel     string `json:"targetModel"`
+		ReasoningEffort string `json:"reasoningEffort"`
+		ApplyGlobal     bool   `json:"applyGlobal"`
+		AccountID       string `json:"accountId"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	record, err := s.models.UpsertModelMapping(models.ModelMappingInput{
-		RecordID:    c.Param("id"),
-		ModelName:   payload.ModelName,
-		TargetModel: payload.TargetModel,
-		ApplyGlobal: payload.ApplyGlobal,
-		AccountID:   payload.AccountID,
+		RecordID:        c.Param("id"),
+		ModelName:       payload.ModelName,
+		TargetModel:     payload.TargetModel,
+		ReasoningEffort: payload.ReasoningEffort,
+		ApplyGlobal:     payload.ApplyGlobal,
+		AccountID:       payload.AccountID,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -3002,6 +3012,24 @@ func collectReasoningText(events []codex.SSEEvent) string {
 		return builder.String()
 	}
 	return fallback
+}
+
+func applyMappedReasoningEffort(request *codex.ResponsesRequest, mappedEffort string, hasExplicitReasoning bool) {
+	effort := strings.TrimSpace(mappedEffort)
+	if effort == "" || hasExplicitReasoning {
+		return
+	}
+	if request.Reasoning == nil {
+		request.Reasoning = &codex.Reasoning{
+			Effort:  effort,
+			Summary: "auto",
+		}
+		return
+	}
+	request.Reasoning.Effort = effort
+	if strings.TrimSpace(request.Reasoning.Summary) == "" {
+		request.Reasoning.Summary = "auto"
+	}
 }
 
 func collectToolCalls(events []codex.SSEEvent) []gin.H {

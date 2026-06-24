@@ -12,10 +12,11 @@ import (
 )
 
 type chatProxyRequest struct {
-	CodexRequest   codex.ResponsesRequest
-	TupleSchema    map[string]any
-	RequestedModel string
-	Stream         bool
+	CodexRequest         codex.ResponsesRequest
+	TupleSchema          map[string]any
+	RequestedModel       string
+	Stream               bool
+	HasExplicitReasoning bool
 }
 
 func parseChatProxyRequest(cfg config.Config, body []byte, userAgent string) (chatProxyRequest, error) {
@@ -36,10 +37,11 @@ func parseChatProxyRequest(cfg config.Config, body []byte, userAgent string) (ch
 	}
 	translation := openai.ToCodex(cfg, request)
 	return chatProxyRequest{
-		CodexRequest:   translation.Request,
-		TupleSchema:    translation.TupleSchema,
-		RequestedModel: request.Model,
-		Stream:         request.Stream,
+		CodexRequest:         translation.Request,
+		TupleSchema:          translation.TupleSchema,
+		RequestedModel:       request.Model,
+		Stream:               request.Stream,
+		HasExplicitReasoning: translation.HasExplicitReasoning,
 	}, nil
 }
 
@@ -106,10 +108,11 @@ func parseChatCompatRequest(cfg config.Config, body []byte, userAgent string) (*
 	}
 
 	return &chatProxyRequest{
-		CodexRequest:   request,
-		TupleSchema:    tupleSchema,
-		RequestedModel: requestedModel,
-		Stream:         request.Stream,
+		CodexRequest:         request,
+		TupleSchema:          tupleSchema,
+		RequestedModel:       requestedModel,
+		Stream:               request.Stream,
+		HasExplicitReasoning: request.Reasoning != nil && strings.TrimSpace(request.Reasoning.Effort) != "",
 	}, nil
 }
 

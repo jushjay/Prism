@@ -12,8 +12,10 @@ import (
 )
 
 type TranslationResult struct {
-	Request     codex.ResponsesRequest
-	TupleSchema map[string]any
+	Request                 codex.ResponsesRequest
+	TupleSchema             map[string]any
+	HasExplicitReasoning    bool
+	ExplicitReasoningEffort string
 }
 
 func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
@@ -70,6 +72,7 @@ func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
 		PromptCacheKey: derivePromptCacheKey(req.Messages),
 	}
 	effort := req.ReasoningEffort
+	explicitReasoning := strings.TrimSpace(req.ReasoningEffort)
 	if effort == "" {
 		effort = cfg.Model.DefaultReasoningEffort
 	}
@@ -112,8 +115,10 @@ func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
 				request.Input = []codex.InputItem{{Role: "user", Content: ""}}
 			}
 			return TranslationResult{
-				Request:     request,
-				TupleSchema: tupleSchema,
+				Request:                 request,
+				TupleSchema:             tupleSchema,
+				HasExplicitReasoning:    explicitReasoning != "",
+				ExplicitReasoningEffort: explicitReasoning,
 			}
 		}
 		request.Text = &codex.TextConfig{Format: format}
@@ -121,7 +126,12 @@ func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
 	if len(request.Input) == 0 {
 		request.Input = []codex.InputItem{{Role: "user", Content: ""}}
 	}
-	return TranslationResult{Request: request}
+	return TranslationResult{
+		Request:                 request,
+		TupleSchema:             nil,
+		HasExplicitReasoning:    explicitReasoning != "",
+		ExplicitReasoningEffort: explicitReasoning,
+	}
 }
 
 func extractText(content any) string {

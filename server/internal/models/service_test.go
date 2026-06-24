@@ -77,18 +77,20 @@ func TestServiceResolveMappedModelID(t *testing.T) {
 		},
 		mappings: []ModelMappingRecord{
 			{
-				RecordID:    "global-1",
-				ModelName:   "got-5.4",
-				TargetModel: "gpt-5.4",
-				ApplyGlobal: true,
+				RecordID:        "global-1",
+				ModelName:       "got-5.4",
+				TargetModel:     "gpt-5.4",
+				ReasoningEffort: "low",
+				ApplyGlobal:     true,
 			},
 			{
-				RecordID:     "acct-1",
-				ModelName:    "got-5.4",
-				TargetModel:  "gpt-5.4-mini",
-				ApplyGlobal:  false,
-				AccountID:    "account-a",
-				AccountEmail: "a@example.com",
+				RecordID:        "acct-1",
+				ModelName:       "got-5.4",
+				TargetModel:     "gpt-5.4-mini",
+				ReasoningEffort: "high",
+				ApplyGlobal:     false,
+				AccountID:       "account-a",
+				AccountEmail:    "a@example.com",
 			},
 		},
 		accounts: accountPool,
@@ -110,6 +112,12 @@ func TestServiceResolveMappedModelID(t *testing.T) {
 	}
 	if resolved := svc.ResolveMappedModelID("gpt-5.4", "account-a"); resolved != "gpt-5.4" {
 		t.Fatalf("expected unmapped model to pass through, got %q", resolved)
+	}
+	if mapping := svc.ResolveMapping("got-5.4", "account-a"); mapping.TargetModel != "gpt-5.4-mini" || mapping.ReasoningEffort != "high" {
+		t.Fatalf("expected account mapping with reasoning effort, got %+v", mapping)
+	}
+	if mapping := svc.ResolveMapping("got-5.4", "account-b"); mapping.TargetModel != "gpt-5.4" || mapping.ReasoningEffort != "low" {
+		t.Fatalf("expected global mapping with reasoning effort, got %+v", mapping)
 	}
 }
 
@@ -239,20 +247,22 @@ func TestServiceUpsertModelMappingByRecordID(t *testing.T) {
 	}
 
 	record, err := svc.UpsertModelMapping(ModelMappingInput{
-		ModelName:   "got-5.4",
-		TargetModel: "gpt-5.4",
-		ApplyGlobal: true,
+		ModelName:       "got-5.4",
+		TargetModel:     "gpt-5.4",
+		ReasoningEffort: "medium",
+		ApplyGlobal:     true,
 	})
 	if err != nil {
 		t.Fatalf("initial UpsertModelMapping() error = %v", err)
 	}
 
 	updated, err := svc.UpsertModelMapping(ModelMappingInput{
-		RecordID:    record.RecordID,
-		ModelName:   "team-gpt-5.4",
-		TargetModel: "gpt-5.4-mini",
-		ApplyGlobal: false,
-		AccountID:   account.ID,
+		RecordID:        record.RecordID,
+		ModelName:       "team-gpt-5.4",
+		TargetModel:     "gpt-5.4-mini",
+		ReasoningEffort: "high",
+		ApplyGlobal:     false,
+		AccountID:       account.ID,
 	})
 	if err != nil {
 		t.Fatalf("update UpsertModelMapping() error = %v", err)
@@ -262,6 +272,9 @@ func TestServiceUpsertModelMappingByRecordID(t *testing.T) {
 	}
 	if updated.ModelName != "team-gpt-5.4" || updated.TargetModel != "gpt-5.4-mini" {
 		t.Fatalf("unexpected updated mapping %+v", updated)
+	}
+	if updated.ReasoningEffort != "high" {
+		t.Fatalf("updated reasoning effort = %q, want high", updated.ReasoningEffort)
 	}
 	if updated.ApplyGlobal {
 		t.Fatalf("expected updated mapping to become account scoped")
