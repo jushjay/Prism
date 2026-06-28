@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jushjay/prism/internal/config"
+	"github.com/jushjay/prism/internal/openai"
 )
 
 func TestParseChatCompletionRequestNormalizesCursorTools(t *testing.T) {
@@ -215,5 +216,38 @@ func TestParseChatProxyRequestDoesNotApplyCompatForNonCursor(t *testing.T) {
 	}, body, "curl/8.0")
 	if err == nil {
 		t.Fatal("expected non-Cursor compat payload to be rejected by chat parser")
+	}
+}
+
+func TestToCodexSupportsRootToolNameForFunctionTool(t *testing.T) {
+	request, err := parseChatCompletionRequest([]byte(`{
+		"model":"gpt-5.4",
+		"stream":true,
+		"tools":[{
+			"type":"function",
+			"name":"search_docs",
+			"description":"Search docs",
+			"parameters":{"type":"object","properties":{"query":{"type":"string"}}}
+		}]
+	}`), "Cursor/1.0")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	request.Tools[0].Function = openai.ToolSpec{}
+	translated := openai.ToCodex(config.Config{Model: config.ModelConfig{DefaultModel: "gpt-5.4"}}, request)
+	if len(translated.Request.Tools) != 1 {
+		t.Fatalf("expected one tool, got %d", len(translated.Request.Tools))
+	}
+	if translated.Request.Tools[0].Name != "search_docs" {
+		t.Fatalf("expected root name fallback to be preserved, got %q", translated.Request.Tools[0].Name)
+	}
+	if translated.Request.Tools[0].Function == nil || translated.Request.Tools[0].Function.Name != "search_docs" {
+		t.Fatalf("expected function name fallback to be preserved, got %#v", translated.Request.Tools[0].Function)
+	}
+	if translated.Request.Tools[0].Description != "Search docs" {
+		t.Fatalf("expected description fallback to be preserved, got %q", translated.Request.Tools[0].Description)
+	}
+	if translated.Request.Tools[0].Parameters == nil || translated.Request.Tools[0].Parameters["type"] != "object" {
+		t.Fatalf("expected parameters fallback to be preserved, got %#v", translated.Request.Tools[0].Parameters)
 	}
 }

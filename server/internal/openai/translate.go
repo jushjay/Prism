@@ -88,15 +88,31 @@ func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
 	if len(req.Tools) > 0 {
 		tools := make([]codex.Tool, 0, len(req.Tools))
 		for _, tool := range req.Tools {
+			toolName := strings.TrimSpace(tool.Function.Name)
+			if toolName == "" {
+				toolName = strings.TrimSpace(tool.Name)
+			}
+			toolDescription := strings.TrimSpace(tool.Function.Description)
+			if toolDescription == "" {
+				toolDescription = strings.TrimSpace(tool.Description)
+			}
+			toolParameters := tool.Function.Parameters
+			if len(toolParameters) == 0 {
+				toolParameters = tool.Parameters
+			}
+			functionParameters := tool.Function.Parameters
+			if len(functionParameters) == 0 {
+				functionParameters = tool.Parameters
+			}
 			tools = append(tools, codex.Tool{
 				Type:        tool.Type,
-				Name:        tool.Function.Name,
-				Description: tool.Function.Description,
-				Parameters:  tool.Function.Parameters,
+				Name:        toolName,
+				Description: toolDescription,
+				Parameters:  toolParameters,
 				Function: &codex.ToolFunction{
-					Name:        tool.Function.Name,
-					Description: tool.Function.Description,
-					Parameters:  tool.Function.Parameters,
+					Name:        toolName,
+					Description: toolDescription,
+					Parameters:  functionParameters,
 				},
 			})
 		}

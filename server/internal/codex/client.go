@@ -977,7 +977,48 @@ func sanitizeUnsupportedUpstreamFields(request ResponsesRequest) ResponsesReques
 	request.Metadata = nil
 	request.StreamOptions = nil
 	request.Input = normalizeUpstreamCallIDs(request.Input)
+	request.Tools = normalizeResponsesTools(request.Tools)
 	return request
+}
+
+func normalizeResponsesTools(tools []Tool) []Tool {
+	normalized := make([]Tool, 0, len(tools))
+	for _, tool := range tools {
+		toolType := strings.TrimSpace(tool.Type)
+		if toolType == "" {
+			toolType = "function"
+		}
+
+		name := strings.TrimSpace(tool.Name)
+		description := strings.TrimSpace(tool.Description)
+		parameters := tool.Parameters
+		if function := tool.Function; function != nil {
+			if name == "" {
+				name = strings.TrimSpace(function.Name)
+			}
+			if description == "" {
+				description = strings.TrimSpace(function.Description)
+			}
+			if len(parameters) == 0 {
+				parameters = function.Parameters
+			}
+		}
+
+		entry := Tool{
+			Type:        toolType,
+			Name:        name,
+			Description: description,
+			Parameters:  parameters,
+			Format:      tool.Format,
+			Strict:      tool.Strict,
+			Function:    nil,
+		}
+		if toolType == "function" && entry.Name == "" {
+			continue
+		}
+		normalized = append(normalized, entry)
+	}
+	return normalized
 }
 
 func normalizeUpstreamCallIDs(input []InputItem) []InputItem {

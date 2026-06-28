@@ -21,8 +21,11 @@ type ChatMessage struct {
 }
 
 type Tool struct {
-	Type     string   `json:"type"`
-	Function ToolSpec `json:"function"`
+	Type        string         `json:"type"`
+	Name        string         `json:"name,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+	Function    ToolSpec       `json:"function"`
 }
 
 type ToolSpec struct {
