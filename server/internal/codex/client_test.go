@@ -543,10 +543,54 @@ func TestResponsesRequestMarshalStripsUnsupportedCursorCompatFields(t *testing.T
 		`"prompt_cache_retention":"24h"`,
 		`"cursorConversationId":"conv_123"`,
 		`"include_usage":true`,
+		`"function":`,
 	} {
 		if strings.Contains(jsonBody, unwanted) {
 			t.Fatalf("expected marshaled request to strip %s, got %s", unwanted, jsonBody)
 		}
+	}
+}
+
+func TestResponsesRequestMarshalFlattensFunctionTools(t *testing.T) {
+	request := ResponsesRequest{
+		Model:  "gpt-5.4",
+		Input:  []InputItem{{Role: "user", Content: "hello"}},
+		Stream: true,
+		Store:  false,
+		Tools: []Tool{
+			{
+				Type: "function",
+				Function: &ToolFunction{
+					Name:        "Read",
+					Description: "Read a file",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"path": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	request.ForceInstructions = true
+	raw, err := marshalHTTPResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	jsonBody := string(raw)
+	for _, expected := range []string{
+		`"type":"function"`,
+		`"name":"Read"`,
+		`"description":"Read a file"`,
+	} {
+		if !strings.Contains(jsonBody, expected) {
+			t.Fatalf("expected marshaled request to contain %s, got %s", expected, jsonBody)
+		}
+	}
+	if strings.Contains(jsonBody, `"function":`) {
+		t.Fatalf("expected marshaled request to flatten function tools, got %s", jsonBody)
 	}
 }
 
