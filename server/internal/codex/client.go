@@ -166,6 +166,45 @@ func (c *Client) CreateCustomResponse(ctx context.Context, baseURL, apiKey, endp
 	return resp, nil
 }
 
+func (c *Client) CreateCustomPassthrough(ctx context.Context, baseURL, apiKey, endpointPath, userAgent string, body []byte, headers map[string]string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, TargetURL(baseURL, normalizeCustomEndpointPath(endpointPath)), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	for key, value := range headers {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		req.Header.Set(key, value)
+	}
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+	if strings.TrimSpace(userAgent) != "" {
+		req.Header.Set("User-Agent", strings.TrimSpace(userAgent))
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return nil, &UpstreamError{
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(string(body)),
+			Header:     resp.Header.Clone(),
+		}
+	}
+	return resp, nil
+}
+
 func customEndpointType(value string) string {
 	switch {
 	case strings.HasSuffix(normalizeCustomEndpointPath(value), "/chat/completions"):
@@ -283,10 +322,14 @@ func marshalAuditChatCompletionsRequest(request ResponsesRequest) ([]byte, error
 			if role == "" {
 				continue
 			}
-			messages = append(messages, map[string]any{
+			message := map[string]any{
 				"role":    role,
 				"content": normalizeChatCompletionContent(item.Content),
-			})
+			}
+			if role == "assistant" && strings.TrimSpace(item.ReasoningContent) != "" {
+				message["reasoning_content"] = item.ReasoningContent
+			}
+			messages = append(messages, message)
 		}
 	}
 	for _, toolCalls := range pendingAssistantToolCalls {

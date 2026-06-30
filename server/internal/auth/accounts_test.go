@@ -196,15 +196,20 @@ func TestAddAndUpdateCustomAccount(t *testing.T) {
 	if account.CustomUserAgent != "OpenRouter-Agent/1.0" {
 		t.Fatalf("expected custom user agent to persist, got %q", account.CustomUserAgent)
 	}
+	if !account.CustomProtocolTransformEnabled() {
+		t.Fatalf("expected custom protocol transform to default enabled")
+	}
 	if account.DisabledByUser {
 		t.Fatalf("expected account to be enabled")
 	}
 
 	nextType := "responses"
 	nextUserAgent := "OpenRouter-Agent/2.0"
+	nextTransform := false
 	updated, err := pool.UpdateProfile(account.ID, AccountProfileUpdate{
 		CustomEndpointType: &nextType,
 		CustomUserAgent:    &nextUserAgent,
+		CustomTransform:    &nextTransform,
 	})
 	if err != nil {
 		t.Fatalf("update custom account: %v", err)
@@ -217,6 +222,9 @@ func TestAddAndUpdateCustomAccount(t *testing.T) {
 	}
 	if updated.CustomUserAgent != nextUserAgent {
 		t.Fatalf("expected custom user agent to update, got %q", updated.CustomUserAgent)
+	}
+	if updated.CustomProtocolTransformEnabled() {
+		t.Fatalf("expected custom protocol transform to be disabled")
 	}
 }
 

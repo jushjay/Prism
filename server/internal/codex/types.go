@@ -48,14 +48,15 @@ type ToolFunction struct {
 }
 
 type InputItem struct {
-	Role      string `json:"role,omitempty"`
-	Type      string `json:"type,omitempty"`
-	Content   any    `json:"content,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Input     string `json:"input,omitempty"`
-	Output    any    `json:"output,omitempty"`
+	Role             string `json:"role,omitempty"`
+	Type             string `json:"type,omitempty"`
+	Content          any    `json:"content,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	CallID           string `json:"call_id,omitempty"`
+	Name             string `json:"name,omitempty"`
+	Arguments        string `json:"arguments,omitempty"`
+	Input            string `json:"input,omitempty"`
+	Output           any    `json:"output,omitempty"`
 }
 
 type ResponsesResponse struct {

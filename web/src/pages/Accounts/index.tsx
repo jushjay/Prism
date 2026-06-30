@@ -136,6 +136,7 @@ function customAccountFormValues(account?: Prism.Account) {
   const mode = customEndpointMode(endpoint);
   return {
     ...account,
+    custom_transform: account?.custom_transform ?? true,
     custom_endpoint_mode: mode,
     custom_endpoint_custom_path: mode === 'custom' ? endpoint : undefined,
   };
@@ -659,6 +660,13 @@ const AccountsPage: React.FC = () => {
             ) : null
           }
         </ProFormDependency>
+        <ProFormSwitch
+          name="custom_transform"
+          label="协议转换"
+          initialValue
+          tooltip="开启后走 Prism 的协议兼容层；关闭后会把 Cursor 请求原样直通转发到上游。"
+          extra="官方兼容较好的上游可关闭，直接透传请求，同时仍会记录请求日志。"
+        />
         <ProFormSwitch name="enabled" label="启用" initialValue />
       </ModalForm>
 
@@ -763,6 +771,12 @@ const AccountsPage: React.FC = () => {
                     ) : null
                   }
                 </ProFormDependency>
+                <ProFormSwitch
+                  name="custom_transform"
+                  label="协议转换"
+                  tooltip="开启后走 Prism 的协议兼容层；关闭后会把 Cursor 请求原样直通转发到上游。"
+                  extra="关闭后适合官方兼容好的上游，例如 Cursor 本身直连已正常工作的接口。"
+                />
               </>
             ) : null
           }
@@ -950,6 +964,11 @@ const AccountsPage: React.FC = () => {
                 {
                   title: 'User-Agent',
                   render: () => current.custom_user_agent || '-',
+                },
+                {
+                  title: '协议转换',
+                  render: () =>
+                    current.custom_transform ? '开启' : '直通转发',
                 },
                 {
                   title: 'Models Endpoint',

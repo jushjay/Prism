@@ -28,8 +28,12 @@ func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
 			systemParts = append(systemParts, extractText(message.Content))
 		case "assistant":
 			text := extractText(message.Content)
-			if text != "" {
-				input = append(input, codex.InputItem{Role: "assistant", Content: text})
+			if text != "" || strings.TrimSpace(message.ReasoningContent) != "" {
+				input = append(input, codex.InputItem{
+					Role:             "assistant",
+					Content:          text,
+					ReasoningContent: message.ReasoningContent,
+				})
 			}
 			for _, toolCall := range message.ToolCalls {
 				input = append(input, codex.InputItem{

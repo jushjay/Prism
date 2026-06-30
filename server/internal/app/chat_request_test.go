@@ -251,3 +251,35 @@ func TestToCodexSupportsRootToolNameForFunctionTool(t *testing.T) {
 		t.Fatalf("expected parameters fallback to be preserved, got %#v", translated.Request.Tools[0].Parameters)
 	}
 }
+
+func TestToCodexPreservesAssistantReasoningContent(t *testing.T) {
+	request, err := parseChatCompletionRequest([]byte(`{
+		"model":"deepseek-v4-pro",
+		"messages":[
+			{"role":"user","content":"first"},
+			{"role":"assistant","content":"answer","reasoning_content":"hidden chain"},
+			{"role":"user","content":"continue"}
+		]
+	}`), "Cursor/1.0")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	translated := openai.ToCodex(config.Config{
+		Model: config.ModelConfig{DefaultModel: "deepseek-v4-pro"},
+	}, request)
+
+	if len(translated.Request.Input) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(translated.Request.Input))
+	}
+	assistantItem := translated.Request.Input[1]
+	if assistantItem.Role != "assistant" {
+		t.Fatalf("expected assistant item, got %#v", assistantItem)
+	}
+	if assistantItem.Content != "answer" {
+		t.Fatalf("expected assistant content to be preserved, got %#v", assistantItem.Content)
+	}
+	if assistantItem.ReasoningContent != "hidden chain" {
+		t.Fatalf("expected reasoning_content to be preserved, got %q", assistantItem.ReasoningContent)
+	}
+}

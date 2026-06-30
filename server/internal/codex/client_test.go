@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -226,6 +227,105 @@ func TestCreateCustomResponseUsesChatCompletionsEndpoint(t *testing.T) {
 	}
 	if responseID != "chat_1" || text != "hello" || usage.InputTokens != 1 || usage.OutputTokens != 2 || usage.CachedTokens != 3 || usage.ReasoningTokens != 4 {
 		t.Fatalf("unexpected converted stream responseID=%q text=%q usage=%+v", responseID, text, usage)
+	}
+}
+
+func TestCreateCustomResponsePreservesAssistantReasoningContentInChatCompletions(t *testing.T) {
+	var gotMessages []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		gotMessages = payload.Messages
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chat_1","model":"chat-model","choices":[]}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client()}
+	resp, err := client.CreateCustomResponse(t.Context(), server.URL, "custom-key", "/v1/chat/completions", "Custom-UA/2.0", ResponsesRequest{
+		Model:        "deepseek-v4-pro",
+		Instructions: "system prompt",
+		Input: []InputItem{
+			{Role: "user", Content: "first"},
+			{Role: "assistant", Content: "answer", ReasoningContent: "hidden chain"},
+			{Role: "user", Content: "continue"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateCustomResponse() error = %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if len(gotMessages) != 4 {
+		t.Fatalf("expected 4 messages, got %#v", gotMessages)
+	}
+	assistant := gotMessages[2]
+	if assistant["role"] != "assistant" {
+		t.Fatalf("expected assistant message, got %#v", assistant)
+	}
+	if assistant["content"] != "answer" {
+		t.Fatalf("expected assistant content to be preserved, got %#v", assistant["content"])
+	}
+	if assistant["reasoning_content"] != "hidden chain" {
+		t.Fatalf("expected assistant reasoning_content to be preserved, got %#v", assistant["reasoning_content"])
+	}
+}
+
+func TestCreateCustomPassthroughForwardsRawRequest(t *testing.T) {
+	var gotPath string
+	var gotAuthorization string
+	var gotAccept string
+	var gotContentType string
+	var gotUserAgent string
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuthorization = r.Header.Get("Authorization")
+		gotAccept = r.Header.Get("Accept")
+		gotContentType = r.Header.Get("Content-Type")
+		gotUserAgent = r.Header.Get("User-Agent")
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		gotBody = string(rawBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion"}`))
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client()}
+	resp, err := client.CreateCustomPassthrough(t.Context(), server.URL+"/compat", "custom-key", "/v1/chat/completions", "Custom-UA/3.0", []byte(`{"model":"deepseek-v4-pro","stream":true}`), map[string]string{
+		"accept":       "text/event-stream",
+		"content-type": "application/json",
+	})
+	if err != nil {
+		t.Fatalf("CreateCustomPassthrough() error = %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if gotPath != "/compat/v1/chat/completions" {
+		t.Fatalf("expected passthrough path, got %q", gotPath)
+	}
+	if gotAuthorization != "Bearer custom-key" {
+		t.Fatalf("expected authorization header, got %q", gotAuthorization)
+	}
+	if gotAccept != "text/event-stream" {
+		t.Fatalf("expected accept header, got %q", gotAccept)
+	}
+	if gotContentType != "application/json" {
+		t.Fatalf("expected content-type header, got %q", gotContentType)
+	}
+	if gotUserAgent != "Custom-UA/3.0" {
+		t.Fatalf("expected user agent, got %q", gotUserAgent)
+	}
+	if gotBody != `{"model":"deepseek-v4-pro","stream":true}` {
+		t.Fatalf("expected raw body to be preserved, got %q", gotBody)
 	}
 }
 

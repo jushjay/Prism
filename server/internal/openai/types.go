@@ -12,12 +12,13 @@ type ChatCompletionRequest struct {
 }
 
 type ChatMessage struct {
-	Role         string      `json:"role"`
-	Content      any         `json:"content"`
-	Name         string      `json:"name,omitempty"`
-	ToolCalls    []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID   string      `json:"tool_call_id,omitempty"`
-	FunctionCall *ToolCallFn `json:"function_call,omitempty"`
+	Role             string      `json:"role"`
+	Content          any         `json:"content"`
+	ReasoningContent string      `json:"reasoning_content,omitempty"`
+	Name             string      `json:"name,omitempty"`
+	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID       string      `json:"tool_call_id,omitempty"`
+	FunctionCall     *ToolCallFn `json:"function_call,omitempty"`
 }
 
 type Tool struct {

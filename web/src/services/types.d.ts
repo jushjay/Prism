@@ -89,6 +89,7 @@ declare namespace Prism {
     custom_base_url?: string;
     custom_endpoint_type?: string;
     custom_user_agent?: string;
+    custom_transform: boolean;
     custom_api_key_set?: boolean;
     usage: AccountUsage;
     quota?: AccountQuota;
@@ -107,6 +108,7 @@ declare namespace Prism {
     custom_api_key: string;
     custom_endpoint_type?: string;
     custom_user_agent?: string;
+    custom_transform?: boolean;
     enabled?: boolean;
   }
 
@@ -123,6 +125,7 @@ declare namespace Prism {
     custom_api_key?: string;
     custom_endpoint_type?: string;
     custom_user_agent?: string;
+    custom_transform?: boolean;
   }
 
   interface UsageSummary {

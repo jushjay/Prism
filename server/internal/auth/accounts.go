@@ -50,6 +50,7 @@ type Account struct {
 	CustomAPIKey       string            `json:"custom_api_key,omitempty"`
 	CustomEndpointType string            `json:"custom_endpoint_type,omitempty"`
 	CustomUserAgent    string            `json:"custom_user_agent,omitempty"`
+	CustomTransform    *bool             `json:"custom_transform,omitempty"`
 	CustomModel        string            `json:"custom_model,omitempty"`
 	CustomHeaders      map[string]string `json:"custom_headers,omitempty"`
 	Usage              AccountUsage      `json:"usage"`
@@ -135,6 +136,7 @@ type AccountProfileUpdate struct {
 	CustomAPIKey       *string
 	CustomEndpointType *string
 	CustomUserAgent    *string
+	CustomTransform    *bool
 }
 
 type CustomAccountInput struct {
@@ -144,6 +146,7 @@ type CustomAccountInput struct {
 	CustomAPIKey       string
 	CustomEndpointType string
 	CustomUserAgent    string
+	CustomTransform    *bool
 	Enabled            bool
 }
 
@@ -227,6 +230,7 @@ func (p *AccountPool) AddCustomAccount(input CustomAccountInput) (Account, error
 		CustomAPIKey:       strings.TrimSpace(input.CustomAPIKey),
 		CustomEndpointType: customEndpointType,
 		CustomUserAgent:    strings.TrimSpace(input.CustomUserAgent),
+		CustomTransform:    cloneBoolPtr(input.CustomTransform),
 		DisabledByUser:     !input.Enabled,
 		CreatedAt:          now,
 		UpdatedAt:          now,
@@ -502,6 +506,9 @@ func (p *AccountPool) UpdateProfile(id string, update AccountProfileUpdate) (Acc
 		}
 		if update.CustomUserAgent != nil {
 			next.CustomUserAgent = strings.TrimSpace(*update.CustomUserAgent)
+		}
+		if update.CustomTransform != nil {
+			next.CustomTransform = cloneBoolPtr(update.CustomTransform)
 		}
 		if next.Provider == "" {
 			next.Provider = ProviderOpenAI
@@ -987,6 +994,24 @@ func CloneQuota(quota *AccountQuota) *AccountQuota {
 	return cloneQuota(*quota)
 }
 
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func (a Account) CustomProtocolTransformEnabled() bool {
+	if a.Provider != ProviderCustom {
+		return true
+	}
+	if a.CustomTransform == nil {
+		return true
+	}
+	return *a.CustomTransform
+}
+
 func accountsEqualForMetadata(before, after Account) bool {
 	return before.Provider == after.Provider &&
 		before.UserID == after.UserID &&
@@ -997,6 +1022,7 @@ func accountsEqualForMetadata(before, after Account) bool {
 		before.CustomAPIKey == after.CustomAPIKey &&
 		before.CustomEndpointType == after.CustomEndpointType &&
 		before.CustomUserAgent == after.CustomUserAgent &&
+		before.CustomProtocolTransformEnabled() == after.CustomProtocolTransformEnabled() &&
 		before.ExpiresAt.Equal(after.ExpiresAt)
 }
 
