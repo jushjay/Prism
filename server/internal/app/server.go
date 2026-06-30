@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -77,6 +78,7 @@ type accountResponse struct {
 	CustomBaseURL      string               `json:"custom_base_url,omitempty"`
 	CustomEndpointType string               `json:"custom_endpoint_type,omitempty"`
 	CustomUserAgent    string               `json:"custom_user_agent,omitempty"`
+	CustomTransform    bool                 `json:"custom_transform"`
 	CustomAPIKeySet    bool                 `json:"custom_api_key_set,omitempty"`
 	Usage              auth.AccountUsage    `json:"usage"`
 	Quota              *auth.AccountQuota   `json:"quota,omitempty"`
@@ -355,6 +357,7 @@ func accountView(account auth.Account) accountResponse {
 		CustomBaseURL:      account.CustomBaseURL,
 		CustomEndpointType: account.CustomEndpointType,
 		CustomUserAgent:    account.CustomUserAgent,
+		CustomTransform:    account.CustomProtocolTransformEnabled(),
 		CustomAPIKeySet:    strings.TrimSpace(account.CustomAPIKey) != "",
 		Usage:              account.Usage,
 		Quota:              auth.CloneQuota(account.Quota),
@@ -615,6 +618,7 @@ func (s *Server) handleCustomAccountCreate(c *gin.Context) {
 		CustomAPIKey       string `json:"custom_api_key"`
 		CustomEndpointType string `json:"custom_endpoint_type"`
 		CustomUserAgent    string `json:"custom_user_agent"`
+		CustomTransform    *bool  `json:"custom_transform"`
 		Enabled            *bool  `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -632,6 +636,7 @@ func (s *Server) handleCustomAccountCreate(c *gin.Context) {
 		CustomAPIKey:       payload.CustomAPIKey,
 		CustomEndpointType: payload.CustomEndpointType,
 		CustomUserAgent:    payload.CustomUserAgent,
+		CustomTransform:    payload.CustomTransform,
 		Enabled:            enabled,
 	})
 	if err != nil {
@@ -655,6 +660,7 @@ func (s *Server) handleUpdateAccount(c *gin.Context) {
 		CustomAPIKey       *string `json:"custom_api_key"`
 		CustomEndpointType *string `json:"custom_endpoint_type"`
 		CustomUserAgent    *string `json:"custom_user_agent"`
+		CustomTransform    *bool   `json:"custom_transform"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -676,6 +682,7 @@ func (s *Server) handleUpdateAccount(c *gin.Context) {
 		CustomAPIKey:       payload.CustomAPIKey,
 		CustomEndpointType: payload.CustomEndpointType,
 		CustomUserAgent:    payload.CustomUserAgent,
+		CustomTransform:    payload.CustomTransform,
 	})
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -858,6 +865,44 @@ func (s *Server) handleResponses(c *gin.Context) {
 			return
 		}
 		attemptMetrics := newRequestAttemptMetrics()
+		if shouldPassthroughCustomAccount(account) {
+			if supported, known := s.models.AccountSupportsModel(account, requestedModel); known && !supported {
+				s.accounts.Release(account.ID)
+				excludedAccountIDs = append(excludedAccountIDs, account.ID)
+				modelFiltered = true
+				continue
+			}
+			rawHeaders := passthroughRequestHeaders(c.Request)
+			resp, err := s.createCustomPassthroughResponse(c.Request.Context(), c, account, body, rawHeaders)
+			if err != nil {
+				s.accounts.Release(account.ID)
+				attemptMetrics.statusCode = statusCodePtrFromError(err)
+				s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, requestedModel, request.Stream, attempt, attemptMetrics, false, err.Error())
+				decision := s.applyUpstreamError(account.ID, err)
+				if decision.Retry && !strictAffinity {
+					excludedAccountIDs = append(excludedAccountIDs, account.ID)
+					lastDecision = &decision
+					continue
+				}
+				writeProxyError(c, decision.Status, decision.Message, decision.UseRateLimitType)
+				return
+			}
+			attemptMetrics.upstreamRequestID = upstreamRequestIDFromResponse(resp)
+			attemptMetrics.statusCode = intPtr(resp.StatusCode)
+			rawResponseBody, err := proxyHTTPResponse(c, resp)
+			s.accounts.Release(account.ID)
+			if err != nil {
+				s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, requestedModel, request.PreviousResponseID, strictAffinity, attempt, attemptMetrics, nil, 0, 0, 0, false, err.Error())
+				s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, requestedModel, request.Stream, attempt, attemptMetrics, false, err.Error())
+				return
+			}
+			attemptMetrics.usage, attemptMetrics.responseID = parsePassthroughUsage(account.CustomEndpointType, resp.Header, rawResponseBody)
+			if attemptMetrics.usage.InputTokens > 0 || attemptMetrics.usage.OutputTokens > 0 {
+				s.recordUsage(account.ID, requestedModel, attemptMetrics.usage)
+			}
+			s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, requestedModel, request.Stream, attempt, attemptMetrics, true, "")
+			return
+		}
 		upstreamRequest := request
 		resolvedMapping := s.models.ResolveMapping(request.Model, account.ID)
 		upstreamRequest.Model = resolvedMapping.TargetModel
@@ -1111,6 +1156,44 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 			return
 		}
 		attemptMetrics := newRequestAttemptMetrics()
+		if shouldPassthroughCustomAccount(account) {
+			if supported, known := s.models.AccountSupportsModel(account, requestedModel); known && !supported {
+				s.accounts.Release(account.ID)
+				excludedAccountIDs = append(excludedAccountIDs, account.ID)
+				modelFiltered = true
+				continue
+			}
+			rawHeaders := passthroughRequestHeaders(c.Request)
+			resp, err := s.createCustomPassthroughResponse(c.Request.Context(), c, account, body, rawHeaders)
+			if err != nil {
+				s.accounts.Release(account.ID)
+				attemptMetrics.statusCode = statusCodePtrFromError(err)
+				s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, requestedModel, chatRequest.Stream, attempt, attemptMetrics, false, err.Error())
+				decision := s.applyUpstreamError(account.ID, err)
+				if decision.Retry && !strictAffinity {
+					excludedAccountIDs = append(excludedAccountIDs, account.ID)
+					lastDecision = &decision
+					continue
+				}
+				writeProxyError(c, decision.Status, decision.Message, decision.UseRateLimitType)
+				return
+			}
+			attemptMetrics.upstreamRequestID = upstreamRequestIDFromResponse(resp)
+			attemptMetrics.statusCode = intPtr(resp.StatusCode)
+			rawResponseBody, err := proxyHTTPResponse(c, resp)
+			s.accounts.Release(account.ID)
+			if err != nil {
+				s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, requestedModel, "", strictAffinity, attempt, attemptMetrics, nil, 0, 0, 0, false, err.Error())
+				s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, requestedModel, chatRequest.Stream, attempt, attemptMetrics, false, err.Error())
+				return
+			}
+			attemptMetrics.usage, attemptMetrics.responseID = parsePassthroughUsage(account.CustomEndpointType, resp.Header, rawResponseBody)
+			if attemptMetrics.usage.InputTokens > 0 || attemptMetrics.usage.OutputTokens > 0 {
+				s.recordUsage(account.ID, requestedModel, attemptMetrics.usage)
+			}
+			s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, requestedModel, chatRequest.Stream, attempt, attemptMetrics, true, "")
+			return
+		}
 		upstreamCodexRequest := codexRequest
 		resolvedMapping := s.models.ResolveMapping(codexRequest.Model, account.ID)
 		upstreamCodexRequest.Model = resolvedMapping.TargetModel
@@ -1361,6 +1444,14 @@ func (s *Server) createAccountResponse(ctx context.Context, c *gin.Context, acco
 	return resp, err
 }
 
+func (s *Server) createCustomPassthroughResponse(ctx context.Context, c *gin.Context, account auth.Account, body []byte, requestHeaders map[string]string) (*http.Response, error) {
+	targetURL, endpointStyle := describeCustomPassthroughRequest(account)
+	start := time.Now()
+	resp, err := s.codex.CreateCustomPassthrough(ctx, account.CustomBaseURL, account.CustomAPIKey, account.CustomEndpointType, account.CustomUserAgent, body, requestHeaders)
+	s.auditUpstreamResult(c, account, targetURL, endpointStyle, body, requestHeaders, resp, start, err)
+	return resp, err
+}
+
 func (s *Server) auditCursorRequest(c *gin.Context, body []byte) {
 	if s == nil || s.audit == nil {
 		return
@@ -1404,6 +1495,159 @@ func (s *Server) describeUpstreamRequest(account auth.Account, request codex.Res
 		headers["x-codex-turn-state"] = request.TurnState
 	}
 	return s.cfg.API.BaseURL + "/codex/responses", "/codex/responses", body, headers, nil
+}
+
+func describeCustomPassthroughRequest(account auth.Account) (string, string) {
+	endpointStyle := normalizeCustomEndpointPath(account.CustomEndpointType)
+	return codex.TargetURL(account.CustomBaseURL, endpointStyle), endpointStyle
+}
+
+func shouldPassthroughCustomAccount(account auth.Account) bool {
+	return account.Provider == auth.ProviderCustom && !account.CustomProtocolTransformEnabled()
+}
+
+func passthroughRequestHeaders(req *http.Request) map[string]string {
+	headers := map[string]string{}
+	copyPassthroughHeader(headers, req.Header, "Accept")
+	copyPassthroughHeader(headers, req.Header, "Content-Type")
+	copyPassthroughHeader(headers, req.Header, "OpenAI-Beta")
+	return headers
+}
+
+func copyPassthroughHeader(dst map[string]string, src http.Header, key string) {
+	value := strings.TrimSpace(src.Get(key))
+	if value == "" {
+		return
+	}
+	dst[strings.ToLower(key)] = value
+}
+
+func proxyHTTPResponse(c *gin.Context, resp *http.Response) ([]byte, error) {
+	defer resp.Body.Close()
+	copyForwardResponseHeaders(c.Writer.Header(), resp.Header)
+	c.Status(resp.StatusCode)
+	var captured bytes.Buffer
+	buffer := make([]byte, 32*1024)
+	for {
+		n, readErr := resp.Body.Read(buffer)
+		if n > 0 {
+			chunk := buffer[:n]
+			captured.Write(chunk)
+			if _, err := c.Writer.Write(chunk); err != nil {
+				return captured.Bytes(), err
+			}
+			if flusher, ok := c.Writer.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return captured.Bytes(), readErr
+		}
+	}
+	return captured.Bytes(), nil
+}
+
+func copyForwardResponseHeaders(dst, src http.Header) {
+	for key, values := range src {
+		if shouldSkipForwardHeader(key) {
+			continue
+		}
+		dst.Del(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func shouldSkipForwardHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade":
+		return true
+	default:
+		return false
+	}
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func parsePassthroughUsage(endpointType string, headers http.Header, rawBody []byte) (codex.Usage, string) {
+	contentType := strings.ToLower(strings.TrimSpace(headers.Get("Content-Type")))
+	if strings.Contains(contentType, "text/event-stream") {
+		return parsePassthroughSSEUsage(endpointType, rawBody)
+	}
+	return parsePassthroughJSONUsage(endpointType, rawBody)
+}
+
+func parsePassthroughSSEUsage(endpointType string, rawBody []byte) (codex.Usage, string) {
+	reader := bufio.NewReader(bytes.NewReader(rawBody))
+	usage := codex.Usage{}
+	responseID := ""
+	for {
+		event, done, err := readOneSSEEvent(reader)
+		if err != nil || done {
+			return usage, responseID
+		}
+		parsedUsage, parsedResponseID, ok := parsePassthroughEventUsage(endpointType, event)
+		if !ok {
+			continue
+		}
+		usage = parsedUsage
+		if parsedResponseID != "" {
+			responseID = parsedResponseID
+		}
+	}
+}
+
+func parsePassthroughEventUsage(endpointType string, event codex.SSEEvent) (codex.Usage, string, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal(event.Data, &payload); err != nil {
+		return codex.Usage{}, "", false
+	}
+	if codexEndpointType(endpointType) == "chat_completions" {
+		if id, _ := payload["id"].(string); id != "" {
+			if rawUsage, ok := payload["usage"].(map[string]any); ok {
+				return codex.ParseUsage(rawUsage), id, true
+			}
+			return codex.Usage{}, id, false
+		}
+		return codex.Usage{}, "", false
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		return codex.Usage{}, "", false
+	}
+	responseID, _ := response["id"].(string)
+	rawUsage, ok := response["usage"].(map[string]any)
+	if !ok {
+		return codex.Usage{}, responseID, false
+	}
+	return codex.ParseUsage(rawUsage), responseID, true
+}
+
+func parsePassthroughJSONUsage(endpointType string, rawBody []byte) (codex.Usage, string) {
+	var payload map[string]any
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return codex.Usage{}, ""
+	}
+	if codexEndpointType(endpointType) == "chat_completions" {
+		responseID, _ := payload["id"].(string)
+		rawUsage, ok := payload["usage"].(map[string]any)
+		if !ok {
+			return codex.Usage{}, responseID
+		}
+		return codex.ParseUsage(rawUsage), responseID
+	}
+	responseID, _ := payload["id"].(string)
+	rawUsage, ok := payload["usage"].(map[string]any)
+	if !ok {
+		return codex.Usage{}, responseID
+	}
+	return codex.ParseUsage(rawUsage), responseID
 }
 
 func (s *Server) auditUpstreamResult(c *gin.Context, account auth.Account, targetURL, endpointStyle string, requestBody []byte, requestHeaders map[string]string, resp *http.Response, start time.Time, err error) {
@@ -3625,10 +3869,6 @@ func floatPtr(value float64) *float64 {
 }
 
 func int64Ptr(value int64) *int64 {
-	return &value
-}
-
-func intPtr(value int) *int {
 	return &value
 }
 

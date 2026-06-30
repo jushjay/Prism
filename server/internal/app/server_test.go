@@ -91,6 +91,24 @@ func TestCollectReasoningText(t *testing.T) {
 	}
 }
 
+func TestParsePassthroughUsageForChatCompletionsSSE(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "text/event-stream")
+	body := []byte(
+		"data: {\"id\":\"chatcmpl-1\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+			"data: {\"id\":\"chatcmpl-1\",\"model\":\"deepseek-v4-pro\",\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":3},\"completion_tokens_details\":{\"reasoning_tokens\":5}},\"choices\":[]}\n\n" +
+			"data: [DONE]\n\n",
+	)
+
+	usage, responseID := parsePassthroughUsage("/v1/chat/completions", headers, body)
+	if responseID != "chatcmpl-1" {
+		t.Fatalf("expected response id chatcmpl-1, got %q", responseID)
+	}
+	if usage.InputTokens != 11 || usage.OutputTokens != 7 || usage.CachedTokens != 3 || usage.ReasoningTokens != 5 {
+		t.Fatalf("unexpected usage %+v", usage)
+	}
+}
+
 func TestParseOAuthRelayInput(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -755,7 +773,8 @@ func TestHandleCustomAccountCreateAndUpdatePreservesSecret(t *testing.T) {
 		"custom_base_url":"https://api.example.com",
 		"custom_api_key":"secret",
 		"custom_endpoint_type":"v1/chat",
-		"custom_user_agent":"Custom-UA/1.0"
+		"custom_user_agent":"Custom-UA/1.0",
+		"custom_transform":false
 	}`)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/auth/accounts/custom", body)
@@ -783,6 +802,9 @@ func TestHandleCustomAccountCreateAndUpdatePreservesSecret(t *testing.T) {
 	if createPayload.Account.CustomUserAgent != "Custom-UA/1.0" {
 		t.Fatalf("expected custom user agent to round-trip, got %q", createPayload.Account.CustomUserAgent)
 	}
+	if createPayload.Account.CustomTransform {
+		t.Fatalf("expected custom transform to round-trip as disabled")
+	}
 
 	recorder = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPut, "/auth/accounts/"+createPayload.Account.ID, strings.NewReader(`{
@@ -790,7 +812,8 @@ func TestHandleCustomAccountCreateAndUpdatePreservesSecret(t *testing.T) {
 		"custom_base_url":"https://api.example.com",
 		"custom_api_key":"",
 		"custom_endpoint_type":"responses",
-		"custom_user_agent":"Custom-UA/2.0"
+		"custom_user_agent":"Custom-UA/2.0",
+		"custom_transform":true
 	}`))
 	req.Header.Set("Content-Type", "application/json")
 	server.engine.ServeHTTP(recorder, req)
@@ -809,6 +832,9 @@ func TestHandleCustomAccountCreateAndUpdatePreservesSecret(t *testing.T) {
 	}
 	if updated.CustomUserAgent != "Custom-UA/2.0" {
 		t.Fatalf("expected user agent to update, got %q", updated.CustomUserAgent)
+	}
+	if !updated.CustomProtocolTransformEnabled() {
+		t.Fatalf("expected custom transform to update back to enabled")
 	}
 }
 
