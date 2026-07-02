@@ -664,6 +664,7 @@ const UsagePage: React.FC = () => {
             >
               {lineData.length ? (
                 <Line
+                  theme="classicDark"
                   height={320}
                   data={lineData}
                   xField="timestamp"
@@ -681,6 +682,7 @@ const UsagePage: React.FC = () => {
             <ProCard title="Token 构成" loading={summaryReq.loading}>
               {pieData.length ? (
                 <Pie
+                  theme="classicDark"
                   height={320}
                   data={pieData}
                   angleField="value"
@@ -705,6 +707,7 @@ const UsagePage: React.FC = () => {
                 children: (
                   <>
                     <Column
+                      theme="classicDark"
                       height={260}
                       data={(accountReq.data || []).map((item) => ({
                         account: usageAccountLabel(item),

@@ -70,7 +70,7 @@ const BrandLogo: React.FC<BrandLogoProps> = ({ compact = false }) => {
             fontSize: 22,
             fontWeight: 700,
             letterSpacing: '0.08em',
-            color: '#161514',
+            color: 'inherit',
           }}
         >
           PRISM

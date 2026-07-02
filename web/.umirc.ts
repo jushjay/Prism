@@ -8,7 +8,7 @@ export default defineConfig({
   request: {},
   favicons: ['/favicon.svg'],
   layout: {
-    title: 'Prism',
+    title: 'Prism · 控制台',
     locale: false,
   },
   routes: [
