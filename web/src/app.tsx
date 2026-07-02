@@ -1,13 +1,26 @@
-import { LogoutOutlined, ReloadOutlined } from '@ant-design/icons';
+import { BulbFilled, BulbOutlined, LogoutOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { RequestConfig } from '@umijs/max';
 import { history } from '@umijs/max';
-import { Button, message, Space, Tag, Typography } from 'antd';
+import {
+  Button,
+  ConfigProvider,
+  message,
+  Space,
+  Tag,
+  Tooltip,
+  Typography,
+  theme as antdTheme,
+} from 'antd';
+import zhCN from 'antd/locale/zh_CN';
+import React from 'react';
 import BrandLogo from './components/BrandLogo';
 import {
   dashboardLogout,
   dashboardStatus,
   getAuthStatus,
 } from './services/api';
+import { toggleTheme, useTheme } from './utils/themeStore';
+import './global.less';
 
 export type InitialState = {
   authenticated: boolean;
@@ -56,6 +69,53 @@ export const request: RequestConfig = {
   },
 };
 
+const RootWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const theme = useTheme();
+  const isDark = theme === 'dark';
+  return (
+    <ConfigProvider
+      locale={zhCN}
+      theme={{
+        algorithm: isDark
+          ? antdTheme.darkAlgorithm
+          : antdTheme.defaultAlgorithm,
+        token: {
+          colorPrimary: '#2f8bff',
+          colorInfo: '#2f8bff',
+          colorBgBase: isDark ? '#0b1020' : '#ffffff',
+          borderRadius: 8,
+          wireframe: false,
+        },
+        components: {
+          Layout: {
+            headerBg: 'transparent',
+            siderBg: 'transparent',
+            bodyBg: 'transparent',
+          },
+          Card: { colorBgContainer: 'transparent' },
+          Menu: isDark
+            ? {
+                darkItemBg: 'transparent',
+                darkSubMenuItemBg: 'transparent',
+                darkItemSelectedBg: 'rgba(47,139,255,0.18)',
+                darkItemHoverBg: 'rgba(255,255,255,0.06)',
+              }
+            : {
+                itemSelectedBg: 'rgba(47,139,255,0.12)',
+                itemHoverBg: 'rgba(47,139,255,0.06)',
+              },
+        },
+      }}
+    >
+      {children}
+    </ConfigProvider>
+  );
+};
+
+export const rootContainer = (container: React.ReactNode) => (
+  <RootWrapper>{container}</RootWrapper>
+);
+
 export const layout = ({
   initialState,
   setInitialState,
@@ -63,28 +123,64 @@ export const layout = ({
   initialState?: InitialState;
   setInitialState: (state: InitialState) => void;
 }) => {
+  const theme = useTheme();
+  const isDark = theme === 'dark';
   return {
     logo: <BrandLogo compact />,
     menu: {
       locale: false,
     },
     layout: 'mix' as const,
+    navTheme: (isDark ? 'realDark' : 'light') as 'realDark' | 'light',
     contentWidth: 'Fluid' as const,
     fixedHeader: true,
     token: {
-      sider: {
-        colorMenuBackground: '#fff',
-      },
       header: {
-        colorBgHeader: '#fff',
+        colorBgHeader: isDark
+          ? 'rgba(11,16,32,0.72)'
+          : 'rgba(255,255,255,0.82)',
+        colorTextRightActionsItem: isDark
+          ? 'rgba(235,245,255,0.85)'
+          : 'rgba(24,33,58,0.85)',
+      },
+      sider: {
+        colorMenuBackground: isDark
+          ? 'rgba(11,16,32,0.82)'
+          : 'rgba(255,255,255,0.86)',
+        colorBgMenuItemSelected: 'rgba(47,139,255,0.18)',
+        colorTextMenuSelected: isDark ? '#fff' : '#2f8bff',
+      },
+      pageContainer: {
+        colorBgPageContainer: 'transparent',
       },
     },
     rightContentRender: () => (
-      <Space size={12}>
-        <Tag color={initialState?.authenticated ? 'green' : 'default'}>
-          {initialState?.authenticated ? '已登录' : '未登录'}
+      <Space size={12} align="center">
+        <Tooltip title={isDark ? '切换到亮色主题' : '切换到暗色主题'}>
+          <Button
+            size="small"
+            icon={isDark ? <BulbOutlined /> : <BulbFilled />}
+            onClick={toggleTheme}
+          />
+        </Tooltip>
+        <span
+          className="tech-status-dot"
+          data-on={initialState?.authenticated ? 1 : 0}
+        />
+        <Tag
+          color={initialState?.authenticated ? 'success' : 'default'}
+          bordered={false}
+        >
+          {initialState?.authenticated ? '在线' : '离线'}
         </Tag>
-        <Typography.Text type="secondary">
+        <Typography.Text
+          style={{
+            color: isDark
+              ? 'rgba(190,210,240,0.6)'
+              : 'rgba(80,100,140,0.7)',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
           {initialState?.authStatus?.pool?.active ?? 0} active
         </Typography.Text>
         <Button

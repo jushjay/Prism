@@ -8,42 +8,81 @@ import { message } from 'antd';
 import { createStyles } from 'antd-style';
 import React from 'react';
 
-const useStyles = createStyles(({ token }) => {
+const useStyles = createStyles(({ css }) => {
   return {
-    container: {
-      display: 'flex',
-      flexDirection: 'column',
-      minHeight: '100vh',
-      overflow: 'auto',
-      backgroundImage:
-        "url('https://mdn.alipayobjects.com/yuyan_qk0oxh/afts/img/V-_oS6r-i7wAAAAAAAAAAAAAFl94AQBr')",
-      backgroundSize: '100% 100%',
-      backgroundPosition: 'center',
-    },
-    loginShell: {
-      flex: '1',
-      display: 'grid',
-      placeItems: 'center',
-      padding: '48px 24px',
-    },
-    loginPanel: {
-      width: '100%',
-      maxWidth: 420,
-    },
-    brandHeader: {
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      gap: 12,
-      marginBottom: 28,
-      textAlign: 'center',
-    },
-    brandSubtitle: {
-      color: token.colorTextDescription,
-      fontSize: token.fontSize,
-      letterSpacing: '0.08em',
-      textTransform: 'uppercase' as const,
-    },
+    container: css`
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      overflow: hidden;
+      background:
+        radial-gradient(
+          1000px 560px at 18% -10%,
+          var(--glow-1),
+          transparent 60%
+        ),
+        radial-gradient(
+          820px 520px at 100% 10%,
+          var(--glow-2),
+          transparent 55%
+        ),
+        linear-gradient(180deg, var(--bg-page) 0%, var(--bg-page-2) 100%);
+    `,
+    containerOverlay: css`
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(var(--grid-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+      background-size: 46px 46px;
+      mask-image: radial-gradient(circle at 50% 35%, #000, transparent 80%);
+      -webkit-mask-image: radial-gradient(
+        circle at 50% 35%,
+        #000,
+        transparent 80%
+      );
+    `,
+    loginShell: css`
+      flex: 1;
+      display: grid;
+      place-items: center;
+      padding: 48px 24px;
+      position: relative;
+      z-index: 1;
+    `,
+    loginPanel: css`
+      width: 100%;
+      max-width: 420px;
+      padding: 36px 32px 28px;
+      background: linear-gradient(
+        180deg,
+        var(--bg-surface-1),
+        var(--bg-surface-2)
+      );
+      border: 1px solid var(--border-soft);
+      border-radius: 16px;
+      box-shadow:
+        0 24px 70px rgba(2, 6, 20, 0.55),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(14px);
+    `,
+    brandHeader: css`
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 28px;
+      text-align: center;
+      color: var(--text-primary);
+    `,
+    brandSubtitle: css`
+      color: var(--text-secondary);
+      font-size: 12px;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+    `,
   };
 });
 
@@ -88,6 +127,7 @@ const LoginPage: React.FC = () => {
       <Helmet>
         <title>登录页 - Prism</title>
       </Helmet>
+      <div className={styles.containerOverlay} />
       <div className={styles.loginShell}>
         <div className={styles.loginPanel}>
           <div className={styles.brandHeader}>
@@ -95,6 +135,7 @@ const LoginPage: React.FC = () => {
             <div className={styles.brandSubtitle}>Dashboard Access</div>
           </div>
           <LoginForm
+            style={{ background: 'transparent', boxShadow: 'none' }}
             contentStyle={{
               width: '100%',
               minWidth: 0,

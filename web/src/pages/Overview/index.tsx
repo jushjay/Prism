@@ -162,6 +162,7 @@ const OverviewPage: React.FC = () => {
             >
               {lineData.length ? (
                 <Line
+                  theme="classicDark"
                   height={320}
                   data={lineData}
                   xField="timestamp"
@@ -189,6 +190,7 @@ const OverviewPage: React.FC = () => {
               </div>
               {poolPieData.length ? (
                 <Pie
+                  theme="classicDark"
                   height={220}
                   data={poolPieData}
                   angleField="value"

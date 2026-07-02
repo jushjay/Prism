@@ -235,38 +235,48 @@ function renderQuotaWindow(
 
   return (
     <div className={styles.quotaBlock}>
-      <Space size={[8, 8]} wrap>
-        <Tag color={statusColor}>{statusText}</Tag>
+      <div className={styles.quotaHead}>
+        <Tag color={statusColor} bordered={false}>
+          {statusText}
+        </Tag>
         <Typography.Text type="secondary">
           {formatQuotaWindowLabel(
             rateLimit.window.limit_window_seconds,
             fallbackLabel || '额度',
           )}
         </Typography.Text>
-      </Space>
-      {percentRemaining !== undefined ? (
-        <Progress
-          percent={percentRemaining}
-          size="small"
-          strokeColor={
-            rateLimit.limit_reached
-              ? '#ff4d4f'
-              : percentRemaining <= 20
-              ? '#faad14'
-              : '#1677ff'
-          }
-        />
-      ) : (
-        <Typography.Text type="secondary">暂无可用比例</Typography.Text>
-      )}
-      <Space direction="vertical" size={2}>
+      </div>
+      <div className={styles.quotaBar}>
+        {percentRemaining !== undefined ? (
+          <Progress
+            percent={percentRemaining}
+            size="small"
+            showInfo={false}
+            strokeColor={
+              rateLimit.limit_reached
+                ? '#ff4d4f'
+                : percentRemaining <= 20
+                ? '#faad14'
+                : '#1677ff'
+            }
+          />
+        ) : (
+          <Typography.Text
+            type="secondary"
+            className={styles.quotaBarPlaceholder}
+          >
+            暂无可用比例
+          </Typography.Text>
+        )}
+      </div>
+      <div className={styles.quotaMeta}>
         <Typography.Text type="secondary">
           已用 {formatPercent(percentUsed)}
         </Typography.Text>
         <Typography.Text type="secondary">
-          Reset At {formatDateTime(rateLimit.window.reset_at)}
+          Reset {formatDateTime(rateLimit.window.reset_at)}
         </Typography.Text>
-      </Space>
+      </div>
     </div>
   );
 }
@@ -1018,30 +1028,28 @@ const AccountsPage: React.FC = () => {
                   title: '官方额度更新时间',
                   render: () => formatDateTime(current.quota_fetched_at),
                 },
-                {
-                  title: '5h 额度',
-                  span: 2,
-                  render: () =>
-                    current.enabled
-                      ? renderQuotaWindow(
-                          current.quota?.primary_rate_limit,
-                          '5h 额度',
-                        )
-                      : renderDisabledQuotaAlert(),
-                },
-                {
-                  title: '7天额度',
-                  span: 2,
-                  render: () =>
-                    current.enabled
-                      ? renderQuotaWindow(
-                          current.quota?.secondary_rate_limit,
-                          '7天额度',
-                        )
-                      : renderDisabledQuotaAlert(),
-                },
               ]}
             />
+            <div className={styles.quotaSection}>
+              <div className={styles.quotaSectionItem}>
+                <div className={styles.quotaSectionTitle}>5h 额度</div>
+                {current.enabled
+                  ? renderQuotaWindow(
+                      current.quota?.primary_rate_limit,
+                      '5h 额度',
+                    )
+                  : renderDisabledQuotaAlert()}
+              </div>
+              <div className={styles.quotaSectionItem}>
+                <div className={styles.quotaSectionTitle}>7天额度</div>
+                {current.enabled
+                  ? renderQuotaWindow(
+                      current.quota?.secondary_rate_limit,
+                      '7天额度',
+                    )
+                  : renderDisabledQuotaAlert()}
+              </div>
+            </div>
           </>
         ) : null}
       </Drawer>

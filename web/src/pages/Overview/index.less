@@ -5,30 +5,39 @@
 }
 
 .poolItem {
-  padding: 12px;
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
-  border-radius: 6px;
+  padding: 14px 12px;
+  background: linear-gradient(180deg, var(--stat-tile-bg-1), var(--stat-tile-bg-2));
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  transition: border-color 0.25s, transform 0.25s;
+}
+
+.poolItem:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
 }
 
 .poolLabel {
-  color: rgb(0 0 0 / 45%);
+  color: var(--text-secondary);
   font-size: 12px;
+  letter-spacing: 0.04em;
 }
 
 .poolValue {
   margin-top: 6px;
-  color: rgb(0 0 0 / 88%);
+  color: var(--text-primary);
   font-weight: 600;
   font-size: 22px;
   line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .snippet {
   margin: 0;
   padding: 12px;
   overflow: auto;
-  color: #d6e4ff;
-  background: #111827;
-  border-radius: 6px;
+  color: var(--code-text);
+  background: var(--code-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
 }
