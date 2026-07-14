@@ -1785,6 +1785,51 @@ func TestCollectToolCallsMapsCustomToolItemIDToCallID(t *testing.T) {
 	}
 }
 
+func TestChatStreamStateSanitizesLocalSubagentCloudBaseBranch(t *testing.T) {
+	state := newChatStreamState("gpt-5.6-sol", nil)
+	callID := "call_subagent"
+	events := []codex.SSEEvent{
+		testEvent("response.output_item.added", map[string]any{
+			"item": map[string]any{
+				"type":    "function_call",
+				"id":      callID,
+				"call_id": callID,
+				"name":    "Subagent",
+			},
+		}),
+		testEvent("response.function_call_arguments.delta", map[string]any{
+			"call_id": callID,
+			"delta":   `{"cloud_base_branch":"","environment":"local",`,
+		}),
+		testEvent("response.function_call_arguments.delta", map[string]any{
+			"call_id": callID,
+			"delta":   `"description":"explore","prompt":"read only"}`,
+		}),
+		testEvent("response.function_call_arguments.done", map[string]any{
+			"call_id": callID,
+		}),
+	}
+
+	var chunks []any
+	for _, event := range events {
+		chunks = append(chunks, state.consume(event)...)
+	}
+
+	if len(chunks) != 2 {
+		t.Fatalf("expected initial tool call and sanitized arguments chunks, got %d", len(chunks))
+	}
+	raw, err := json.Marshal(chunks[1])
+	if err != nil {
+		t.Fatalf("marshal chunk: %v", err)
+	}
+	if strings.Contains(string(raw), "cloud_base_branch") {
+		t.Fatalf("expected cloud_base_branch to be stripped, got %s", raw)
+	}
+	if !strings.Contains(string(raw), `\"environment\":\"local\"`) {
+		t.Fatalf("expected sanitized arguments to preserve environment, got %s", raw)
+	}
+}
+
 func TestBuildAccessLogLine(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
