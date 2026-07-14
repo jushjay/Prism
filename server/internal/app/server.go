@@ -897,6 +897,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 				return
 			}
 			attemptMetrics.usage, attemptMetrics.responseID = parsePassthroughUsage(account.CustomEndpointType, resp.Header, rawResponseBody)
+			s.logToolTrace(c, account, "passthrough_response", requestedModel, requestedModel, "", "", summarizePassthroughToolTrace(account.CustomEndpointType, rawResponseBody))
 			if attemptMetrics.usage.InputTokens > 0 || attemptMetrics.usage.OutputTokens > 0 {
 				s.recordUsage(account.ID, requestedModel, attemptMetrics.usage)
 			}
@@ -948,6 +949,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 			eventCh := startUpstreamSSEReader(reader, stopReader)
 			currentResponseID := ""
 			streamUsage := codex.Usage{}
+			toolTrace := newToolTraceAccumulator()
 			heartbeatTicker := time.NewTicker(downstreamHeartbeatInterval)
 			defer heartbeatTicker.Stop()
 			c.Stream(func(w io.Writer) bool {
@@ -972,6 +974,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 						return false
 					}
 					event := result.event
+					toolTrace.observeResponsesEvent(event)
 					attemptMetrics.eventCount++
 					attemptMetrics.eventTypeCounts[event.Event]++
 					if event.Event == "codex.rate_limits" {
@@ -1029,6 +1032,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 			} else {
 				errMessage = attemptMetrics.streamEndReason
 			}
+			s.logToolTrace(c, account, "responses_stream", requestedModel, upstreamRequest.Model, attemptMetrics.streamEndReason, errMessage, toolTrace.summary())
 			s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, upstreamRequest.Model, request.PreviousResponseID, strictAffinity, attempt, attemptMetrics, nil, 0, 0, 0, false, errMessage)
 			s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, upstreamRequest.Model, request.Stream, attempt, attemptMetrics, streamSuccess, errMessage)
 			return
@@ -1072,6 +1076,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 		}
 		textLen, toolCallCount, outputItemCount := responseOutputStats(payload["output"])
 		emptyResponse := isEmptyResponsesOutput(payload["output"], usage)
+		s.logToolTrace(c, account, "responses_non_stream", requestedModel, upstreamRequest.Model, "", "", summarizeResponsesToolTrace(events))
 		s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, upstreamRequest.Model, request.PreviousResponseID, strictAffinity, attempt, attemptMetrics, events, textLen, toolCallCount, outputItemCount, emptyResponse, "")
 		s.recordUsage(account.ID, upstreamRequest.Model, usage)
 		if emptyResponse && attempt < maxEmptyResponseRetries && !strictAffinity {
@@ -1188,6 +1193,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 				return
 			}
 			attemptMetrics.usage, attemptMetrics.responseID = parsePassthroughUsage(account.CustomEndpointType, resp.Header, rawResponseBody)
+			s.logToolTrace(c, account, "passthrough_response", requestedModel, requestedModel, "", "", summarizePassthroughToolTrace(account.CustomEndpointType, rawResponseBody))
 			if attemptMetrics.usage.InputTokens > 0 || attemptMetrics.usage.OutputTokens > 0 {
 				s.recordUsage(account.ID, requestedModel, attemptMetrics.usage)
 			}
@@ -1240,7 +1246,10 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 			currentResponseID := ""
 			streamUsage := codex.Usage{}
 			streamState := newChatStreamState(chatRequest.RequestedModel, tupleSchema)
-			writeChatStreamChunk(wrapWriter{Writer: c.Writer}, streamState.initialRoleChunk())
+			toolTrace := newToolTraceAccumulator()
+			initialChunk := streamState.initialRoleChunk()
+			toolTrace.observeChatChunk(initialChunk)
+			writeChatStreamChunk(wrapWriter{Writer: c.Writer}, initialChunk)
 			heartbeatTicker := time.NewTicker(downstreamHeartbeatInterval)
 			defer heartbeatTicker.Stop()
 			c.Stream(func(w io.Writer) bool {
@@ -1266,6 +1275,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 						return false
 					}
 					event := result.event
+					toolTrace.observeResponsesEvent(event)
 					attemptMetrics.eventCount++
 					attemptMetrics.eventTypeCounts[event.Event]++
 					if event.Event == "codex.rate_limits" {
@@ -1290,6 +1300,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 						recordFirstTokenIfNil(&attemptMetrics.firstTokenMs, time.Since(attemptMetrics.startedAt))
 					}
 					for _, chunk := range chunks {
+						toolTrace.observeChatChunk(chunk)
 						writeChatStreamChunk(w, chunk)
 					}
 					return true
@@ -1323,6 +1334,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 			} else {
 				errMessage = attemptMetrics.streamEndReason
 			}
+			s.logToolTrace(c, account, "chat_transformed_stream", requestedModel, upstreamCodexRequest.Model, attemptMetrics.streamEndReason, errMessage, toolTrace.summary())
 			s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, upstreamCodexRequest.Model, upstreamCodexRequest.PreviousResponseID, strictAffinity, attempt, attemptMetrics, nil, 0, 0, 0, false, errMessage)
 			s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, upstreamCodexRequest.Model, chatRequest.Stream, attempt, attemptMetrics, streamSuccess, errMessage)
 			return
@@ -1372,6 +1384,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		}
 		toolCalls := collectToolCalls(events)
 		emptyResponse := isEmptyCodexResponse(text, toolCalls, usage)
+		s.logToolTrace(c, account, "chat_transformed_non_stream", requestedModel, upstreamCodexRequest.Model, "", "", summarizeResponsesToolTrace(events))
 		s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, upstreamCodexRequest.Model, upstreamCodexRequest.PreviousResponseID, strictAffinity, attempt, attemptMetrics, events, len(strings.TrimSpace(text)), len(toolCalls), 0, emptyResponse, "")
 		if emptyResponse && attempt < maxEmptyResponseRetries && !strictAffinity {
 			s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, upstreamCodexRequest.Model, chatRequest.Stream, attempt, attemptMetrics, true, "")
@@ -1457,6 +1470,13 @@ func (s *Server) auditCursorRequest(c *gin.Context, body []byte) {
 		return
 	}
 	s.audit.LogCursorRequest(c, body)
+}
+
+func (s *Server) logToolTrace(c *gin.Context, account auth.Account, phase, requestedModel, routedModel, streamEndReason, errMessage string, summary toolTraceSummary) {
+	if s == nil || s.audit == nil {
+		return
+	}
+	s.audit.LogToolTrace(c, account, phase, requestedModel, routedModel, endpointStyleFromAccount(account), streamEndReason, errMessage, summary)
 }
 
 func (s *Server) logUpstreamRouting(c *gin.Context, account auth.Account, request codex.ResponsesRequest) {
@@ -2962,6 +2982,309 @@ func newRequestAttemptMetrics() requestAttemptMetrics {
 	}
 }
 
+type toolTraceAccumulator struct {
+	eventTypeCounts         map[string]int
+	upstreamCallsByID       map[string]*toolTraceCall
+	upstreamCallOrder       []string
+	downstreamCallsByKey    map[string]*toolTraceCall
+	downstreamCallOrder     []string
+	downstreamIndexToKey    map[int]string
+	itemIDToCallID          map[string]string
+	upstreamCallsWithDeltas map[string]struct{}
+	finishReasons           []string
+	finishReasonSeen        map[string]struct{}
+	responseID              string
+}
+
+func newToolTraceAccumulator() *toolTraceAccumulator {
+	return &toolTraceAccumulator{
+		eventTypeCounts:         map[string]int{},
+		upstreamCallsByID:       map[string]*toolTraceCall{},
+		downstreamCallsByKey:    map[string]*toolTraceCall{},
+		downstreamIndexToKey:    map[int]string{},
+		itemIDToCallID:          map[string]string{},
+		upstreamCallsWithDeltas: map[string]struct{}{},
+		finishReasonSeen:        map[string]struct{}{},
+	}
+}
+
+func summarizeResponsesToolTrace(events []codex.SSEEvent) toolTraceSummary {
+	trace := newToolTraceAccumulator()
+	for _, event := range events {
+		trace.observeResponsesEvent(event)
+	}
+	return trace.summary()
+}
+
+func summarizePassthroughToolTrace(endpointType string, rawBody []byte) toolTraceSummary {
+	trace := newToolTraceAccumulator()
+	if len(rawBody) == 0 {
+		return trace.summary()
+	}
+	if codexEndpointType(endpointType) == "chat_completions" {
+		if bytes.Contains(rawBody, []byte("data: ")) {
+			reader := bufio.NewReader(bytes.NewReader(rawBody))
+			for {
+				event, done, err := readOneSSEEvent(reader)
+				if err != nil || done {
+					break
+				}
+				data := strings.TrimSpace(string(event.Data))
+				if data == "" || data == "[DONE]" {
+					continue
+				}
+				trace.eventTypeCounts["chat.completion.chunk"]++
+				var payload map[string]any
+				if err := json.Unmarshal(event.Data, &payload); err != nil {
+					continue
+				}
+				trace.observeChatPayload(payload)
+			}
+			return trace.summary()
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rawBody, &payload); err == nil {
+			trace.eventTypeCounts["chat.completion"]++
+			trace.observeChatPayload(payload)
+		}
+		return trace.summary()
+	}
+	reader := bufio.NewReader(bytes.NewReader(rawBody))
+	for {
+		event, done, err := readOneSSEEvent(reader)
+		if err != nil || done {
+			break
+		}
+		trace.observeResponsesEvent(event)
+	}
+	return trace.summary()
+}
+
+func (t *toolTraceAccumulator) observeResponsesEvent(event codex.SSEEvent) {
+	if t == nil {
+		return
+	}
+	eventName := strings.TrimSpace(event.Event)
+	if eventName == "" {
+		eventName = "message"
+	}
+	t.eventTypeCounts[eventName]++
+	var payload map[string]any
+	if err := json.Unmarshal(event.Data, &payload); err != nil {
+		return
+	}
+	if responseID := extractResponseIDFromPayload(payload); responseID != "" {
+		t.responseID = responseID
+	}
+	switch event.Event {
+	case "response.output_item.added":
+		item, ok := payload["item"].(map[string]any)
+		if !ok {
+			return
+		}
+		itemType, _ := item["type"].(string)
+		if itemType != "function_call" && itemType != "custom_tool_call" {
+			return
+		}
+		callID := toolCallIDFromItem(item)
+		if callID == "" {
+			return
+		}
+		itemID, _ := item["id"].(string)
+		name, _ := item["name"].(string)
+		if itemID != "" {
+			t.itemIDToCallID[itemID] = callID
+		}
+		t.upstreamCall(callID, callID, name)
+	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
+		callID, _ := payload["call_id"].(string)
+		itemID, _ := payload["item_id"].(string)
+		callID = resolveToolCallID(callID, itemID, t.itemIDToCallID)
+		if callID == "" {
+			return
+		}
+		delta, _ := payload["delta"].(string)
+		call := t.upstreamCall(callID, callID, "")
+		call.ArgumentsBytes += len([]byte(delta))
+		t.upstreamCallsWithDeltas[callID] = struct{}{}
+	case "response.function_call_arguments.done", "response.custom_tool_call_input.done":
+		callID, _ := payload["call_id"].(string)
+		itemID, _ := payload["item_id"].(string)
+		callID = resolveToolCallID(callID, itemID, t.itemIDToCallID)
+		if callID == "" {
+			return
+		}
+		name, _ := payload["name"].(string)
+		arguments, _ := payload["arguments"].(string)
+		if arguments == "" {
+			arguments, _ = payload["input"].(string)
+		}
+		call := t.upstreamCall(callID, callID, name)
+		if _, hasDeltas := t.upstreamCallsWithDeltas[callID]; !hasDeltas {
+			call.ArgumentsBytes = len([]byte(arguments))
+		}
+	}
+}
+
+func (t *toolTraceAccumulator) observeChatChunk(chunk any) {
+	if t == nil || chunk == nil {
+		return
+	}
+	raw, err := json.Marshal(chunk)
+	if err != nil {
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return
+	}
+	t.observeChatPayload(payload)
+}
+
+func (t *toolTraceAccumulator) observeChatPayload(payload map[string]any) {
+	if t == nil || payload == nil {
+		return
+	}
+	if responseID, _ := payload["id"].(string); responseID != "" {
+		t.responseID = responseID
+	}
+	choices, _ := payload["choices"].([]any)
+	for _, rawChoice := range choices {
+		choice, _ := rawChoice.(map[string]any)
+		if finishReason, _ := choice["finish_reason"].(string); finishReason != "" {
+			t.addFinishReason(finishReason)
+		}
+		if delta, ok := choice["delta"].(map[string]any); ok {
+			t.observeChatToolCalls(delta["tool_calls"])
+		}
+		if message, ok := choice["message"].(map[string]any); ok {
+			t.observeChatToolCalls(message["tool_calls"])
+		}
+	}
+}
+
+func (t *toolTraceAccumulator) observeChatToolCalls(rawToolCalls any) {
+	toolCalls, ok := rawToolCalls.([]any)
+	if !ok {
+		return
+	}
+	for _, rawToolCall := range toolCalls {
+		toolCall, ok := rawToolCall.(map[string]any)
+		if !ok {
+			continue
+		}
+		index := -1
+		if value, ok := toolCall["index"].(float64); ok {
+			index = int(value)
+		}
+		id, _ := toolCall["id"].(string)
+		key := ""
+		if index >= 0 {
+			key = t.downstreamIndexToKey[index]
+		}
+		if key == "" {
+			key = id
+		}
+		if key == "" && index >= 0 {
+			key = fmt.Sprintf("index_%d", index)
+		}
+		if key == "" {
+			key = fmt.Sprintf("call_%d", len(t.downstreamCallOrder))
+		}
+		if index >= 0 {
+			t.downstreamIndexToKey[index] = key
+		}
+		function, _ := toolCall["function"].(map[string]any)
+		name, _ := function["name"].(string)
+		arguments, _ := function["arguments"].(string)
+		call := t.downstreamCall(key, id, name)
+		call.ArgumentsBytes += len([]byte(arguments))
+	}
+}
+
+func (t *toolTraceAccumulator) upstreamCall(key, id, name string) *toolTraceCall {
+	call, ok := t.upstreamCallsByID[key]
+	if !ok {
+		call = &toolTraceCall{ID: id, Name: name}
+		t.upstreamCallsByID[key] = call
+		t.upstreamCallOrder = append(t.upstreamCallOrder, key)
+		return call
+	}
+	if call.ID == "" {
+		call.ID = id
+	}
+	if call.Name == "" {
+		call.Name = name
+	}
+	return call
+}
+
+func (t *toolTraceAccumulator) downstreamCall(key, id, name string) *toolTraceCall {
+	call, ok := t.downstreamCallsByKey[key]
+	if !ok {
+		call = &toolTraceCall{ID: id, Name: name}
+		t.downstreamCallsByKey[key] = call
+		t.downstreamCallOrder = append(t.downstreamCallOrder, key)
+		return call
+	}
+	if call.ID == "" {
+		call.ID = id
+	}
+	if call.Name == "" {
+		call.Name = name
+	}
+	return call
+}
+
+func (t *toolTraceAccumulator) addFinishReason(reason string) {
+	if _, ok := t.finishReasonSeen[reason]; ok {
+		return
+	}
+	t.finishReasonSeen[reason] = struct{}{}
+	t.finishReasons = append(t.finishReasons, reason)
+}
+
+func (t *toolTraceAccumulator) summary() toolTraceSummary {
+	if t == nil {
+		return toolTraceSummary{}
+	}
+	upstreamCalls := make([]toolTraceCall, 0, len(t.upstreamCallOrder))
+	for _, key := range t.upstreamCallOrder {
+		if call := t.upstreamCallsByID[key]; call != nil {
+			upstreamCalls = append(upstreamCalls, *call)
+		}
+	}
+	downstreamCalls := make([]toolTraceCall, 0, len(t.downstreamCallOrder))
+	for _, key := range t.downstreamCallOrder {
+		if call := t.downstreamCallsByKey[key]; call != nil {
+			downstreamCalls = append(downstreamCalls, *call)
+		}
+	}
+	eventTypeCounts := t.eventTypeCounts
+	if len(eventTypeCounts) == 0 {
+		eventTypeCounts = nil
+	}
+	return toolTraceSummary{
+		EventTypeCounts:     eventTypeCounts,
+		UpstreamToolCalls:   upstreamCalls,
+		DownstreamToolCalls: downstreamCalls,
+		FinishReasons:       t.finishReasons,
+		ResponseID:          t.responseID,
+	}
+}
+
+func extractResponseIDFromPayload(payload map[string]any) string {
+	if id, _ := payload["id"].(string); id != "" {
+		return id
+	}
+	if response, ok := payload["response"].(map[string]any); ok {
+		if id, _ := response["id"].(string); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
 type chatStreamState struct {
 	chunkID            string
 	model              string
@@ -2972,6 +3295,8 @@ type chatStreamState struct {
 	itemIDToName       map[string]string
 	nextToolCallIndex  int
 	callIDsWithDeltas  map[string]struct{}
+	callIDToName       map[string]string
+	argumentBuffers    map[string]*strings.Builder
 	tupleTextBuffer    strings.Builder
 	reasoningBuffer    strings.Builder
 	hasTupleTextBuffer bool
@@ -2988,6 +3313,8 @@ func newChatStreamState(model string, tupleSchema map[string]any) *chatStreamSta
 		itemIDToCallID:    map[string]string{},
 		itemIDToName:      map[string]string{},
 		callIDsWithDeltas: map[string]struct{}{},
+		callIDToName:      map[string]string{},
+		argumentBuffers:   map[string]*strings.Builder{},
 	}
 }
 
@@ -3083,6 +3410,9 @@ func (s *chatStreamState) consume(event codex.SSEEvent) []any {
 				s.itemIDToName[itemID] = name
 			}
 		}
+		if name != "" {
+			s.callIDToName[callID] = name
+		}
 		index := s.nextToolCallIndex
 		s.nextToolCallIndex++
 		s.toolCallIndexByID[callID] = index
@@ -3114,6 +3444,11 @@ func (s *chatStreamState) consume(event codex.SSEEvent) []any {
 			index = 0
 		}
 		delta, _ := payload["delta"].(string)
+		if s.buffersToolArguments(callID) {
+			s.argumentBuffer(callID).WriteString(delta)
+			s.callIDsWithDeltas[callID] = struct{}{}
+			return nil
+		}
 		s.callIDsWithDeltas[callID] = struct{}{}
 		return []any{
 			s.chunkWithDelta(gin.H{
@@ -3134,9 +3469,6 @@ func (s *chatStreamState) consume(event codex.SSEEvent) []any {
 		if callID == "" {
 			return nil
 		}
-		if _, ok := s.callIDsWithDeltas[callID]; ok {
-			return nil
-		}
 		index, ok := s.toolCallIndexByID[callID]
 		if !ok {
 			index = 0
@@ -3145,6 +3477,16 @@ func (s *chatStreamState) consume(event codex.SSEEvent) []any {
 		if arguments == "" {
 			arguments, _ = payload["input"].(string)
 		}
+		if s.buffersToolArguments(callID) {
+			if buffer := s.argumentBuffers[callID]; buffer != nil && buffer.Len() > 0 {
+				arguments = buffer.String()
+			}
+			delete(s.argumentBuffers, callID)
+			delete(s.callIDsWithDeltas, callID)
+		} else if _, ok := s.callIDsWithDeltas[callID]; ok {
+			return nil
+		}
+		arguments = sanitizeCursorToolArguments(s.callIDToName[callID], arguments)
 		return []any{
 			s.chunkWithDelta(gin.H{
 				"tool_calls": []any{
@@ -3218,6 +3560,41 @@ func (s *chatStreamState) consume(event codex.SSEEvent) []any {
 
 func (s *chatStreamState) resolveCallID(callID, itemID string) string {
 	return resolveToolCallID(callID, itemID, s.itemIDToCallID)
+}
+
+func (s *chatStreamState) buffersToolArguments(callID string) bool {
+	return strings.EqualFold(strings.TrimSpace(s.callIDToName[callID]), "Subagent")
+}
+
+func (s *chatStreamState) argumentBuffer(callID string) *strings.Builder {
+	buffer := s.argumentBuffers[callID]
+	if buffer == nil {
+		buffer = &strings.Builder{}
+		s.argumentBuffers[callID] = buffer
+	}
+	return buffer
+}
+
+func sanitizeCursorToolArguments(name, arguments string) string {
+	if !strings.EqualFold(strings.TrimSpace(name), "Subagent") || strings.TrimSpace(arguments) == "" {
+		return arguments
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(arguments), &payload); err != nil {
+		return arguments
+	}
+	environment, _ := payload["environment"].(string)
+	cloudBaseBranch, hasCloudBaseBranch := payload["cloud_base_branch"]
+	if hasCloudBaseBranch && !strings.EqualFold(strings.TrimSpace(environment), "cloud") {
+		if text, ok := cloudBaseBranch.(string); ok && strings.TrimSpace(text) == "" {
+			delete(payload, "cloud_base_branch")
+		}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return arguments
+	}
+	return string(raw)
 }
 
 func writeChatStreamChunk(w io.Writer, chunk any) {
@@ -3377,7 +3754,14 @@ func collectToolCalls(events []codex.SSEEvent) []gin.H {
 	}
 	result := make([]gin.H, 0, len(order))
 	for _, callID := range order {
-		result = append(result, callByID[callID])
+		entry := callByID[callID]
+		if function, ok := entry["function"].(gin.H); ok {
+			name, _ := function["name"].(string)
+			arguments, _ := function["arguments"].(string)
+			function["arguments"] = sanitizeCursorToolArguments(name, arguments)
+			entry["function"] = function
+		}
+		result = append(result, entry)
 	}
 	return result
 }
