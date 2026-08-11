@@ -657,6 +657,78 @@ func TestHandleResponsesRecordsUpstreamFailure(t *testing.T) {
 	}
 }
 
+func TestHandleChatCompletionsRetriesResponseFailedBeforeOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	server, sqliteStore := newTwoAccountRequestLogTestServer(t, []http.HandlerFunc{
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: response.created\n"))
+			_, _ = w.Write([]byte(`data: {"response":{"id":"resp_failed","model":"deepseek-chat"}}` + "\n\n"))
+			_, _ = w.Write([]byte("event: response.in_progress\n"))
+			_, _ = w.Write([]byte(`data: {"response":{"id":"resp_failed","model":"deepseek-chat"}}` + "\n\n"))
+			_, _ = w.Write([]byte("event: response.failed\n"))
+			_, _ = w.Write([]byte(`data: {"response":{"id":"resp_failed","error":{"message":"upstream unavailable"}}}` + "\n\n"))
+		},
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+			_, _ = w.Write([]byte(`data: {"delta":"recovered"}` + "\n\n"))
+			_, _ = w.Write([]byte("event: response.completed\n"))
+			_, _ = w.Write([]byte(`data: {"response":{"id":"resp_recovered","model":"deepseek-chat","usage":{"input_tokens":2,"output_tokens":1},"output":[{"type":"message","content":[{"type":"output_text","text":"recovered"}]}]}}` + "\n\n"))
+		},
+	})
+	defer sqliteStore.Close()
+
+	server.engine.POST("/v1/chat/completions", server.requireAPIKey(), server.handleChatCompletions)
+	requestBody := `{"model":"deepseek-chat","messages":[{"role":"user","content":"retry"}],"stream":true}`
+	recorder := &closeNotifyRecorder{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer proxy-key")
+	req.Header.Set("User-Agent", "Cursor/1.0")
+	server.engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "recovered") || !strings.Contains(recorder.Body.String(), "[DONE]") {
+		t.Fatalf("expected recovered stream completion, got %q", recorder.Body.String())
+	}
+
+	rows, err := sqliteStore.DB().Query(`
+		SELECT retry_attempt, success, error_message, response_id, input_tokens, output_tokens
+		FROM request_events
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		t.Fatalf("query request events: %v", err)
+	}
+	defer rows.Close()
+	var records [][]any
+	for rows.Next() {
+		var retryAttempt, success int
+		var errorMessage, responseID string
+		var inputTokens, outputTokens sql.NullInt64
+		if err := rows.Scan(&retryAttempt, &success, &errorMessage, &responseID, &inputTokens, &outputTokens); err != nil {
+			t.Fatalf("scan request event: %v", err)
+		}
+		records = append(records, []any{retryAttempt, success, errorMessage, responseID, inputTokens.Int64, outputTokens.Int64})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate request events: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected two attempts, got %#v", records)
+	}
+	if records[0][0] != 0 || records[0][1] != 0 || records[0][3] != "resp_failed" || !strings.Contains(records[0][2].(string), "upstream unavailable") {
+		t.Fatalf("unexpected failed attempt %#v", records[0])
+	}
+	if records[1][0] != 1 || records[1][1] != 1 || records[1][3] != "resp_recovered" || records[1][4] != int64(2) || records[1][5] != int64(1) {
+		t.Fatalf("unexpected successful retry %#v", records[1])
+	}
+}
+
 func newRequestLogTestServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request)) (*Server, *store.SQLiteStore) {
 	t.Helper()
 
@@ -766,6 +838,7 @@ func newRequestLogTestServer(t *testing.T, handler func(w http.ResponseWriter, r
 	}
 	server.engine.Use(gin.Recovery())
 	server.engine.POST("/v1/responses", server.requireAPIKey(), server.handleResponses)
+	server.engine.POST("/v1/chat/completions", server.requireAPIKey(), server.handleChatCompletions)
 	return server, sqliteStore
 }
 

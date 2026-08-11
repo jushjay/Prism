@@ -970,7 +970,11 @@ func (s *Server) handleResponses(c *gin.Context) {
 					}
 					if result.done {
 						attemptMetrics.streamEnded = true
-						attemptMetrics.streamEndReason = "done"
+						if attemptMetrics.responseCompleted {
+							attemptMetrics.streamEndReason = "done"
+						} else {
+							attemptMetrics.streamEndReason = "stream_ended_without_completion"
+						}
 						return false
 					}
 					event := result.event
@@ -994,6 +998,9 @@ func (s *Server) handleResponses(c *gin.Context) {
 						attemptMetrics.responseID = responseID
 					}
 					currentResponseID = recordResponseAffinity(s.affinity, event, currentResponseID, account.ID, upstreamRequest.PromptCacheKey, upstreamTurnState, upstreamRequest.Instructions)
+					if markStreamTerminalEvent(&attemptMetrics, event) {
+						return false
+					}
 					if isMeaningfulResponsesOutputEvent(event) {
 						recordFirstTokenIfNil(&attemptMetrics.firstTokenMs, time.Since(attemptMetrics.startedAt))
 					}
@@ -1236,23 +1243,131 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		attemptMetrics.upstreamRequestID = upstreamRequestIDFromResponse(resp)
 		if chatRequest.Stream {
 			upstreamTurnState := resp.Header.Get("x-codex-turn-state")
-			c.Status(http.StatusOK)
-			c.Header("Content-Type", "text/event-stream")
-			c.Header("Cache-Control", "no-cache, no-transform")
 			reader := bufio.NewReader(resp.Body)
 			stopReader := make(chan struct{})
-			defer close(stopReader)
 			eventCh := startUpstreamSSEReader(reader, stopReader)
 			currentResponseID := ""
 			streamUsage := codex.Usage{}
 			streamState := newChatStreamState(chatRequest.RequestedModel, tupleSchema)
 			toolTrace := newToolTraceAccumulator()
+			processEvent := func(event codex.SSEEvent) ([]any, bool) {
+				toolTrace.observeResponsesEvent(event)
+				attemptMetrics.eventCount++
+				attemptMetrics.eventTypeCounts[event.Event]++
+				if event.Event == "codex.rate_limits" {
+					s.applyRateLimitEvent(account.ID, event.Data)
+					return nil, false
+				}
+				if event.Event == "keepalive" {
+					return nil, false
+				}
+				if usage, ok := extractUsageFromEvent(event); ok {
+					streamUsage = usage
+					attemptMetrics.usage = usage
+				}
+				if responseID := extractResponseIDFromEvent(event); responseID != "" {
+					currentResponseID = responseID
+					attemptMetrics.responseID = responseID
+				}
+				currentResponseID = recordResponseAffinity(s.affinity, event, currentResponseID, account.ID, upstreamCodexRequest.PromptCacheKey, upstreamTurnState, upstreamCodexRequest.Instructions)
+				if markStreamTerminalEvent(&attemptMetrics, event) {
+					return nil, true
+				}
+				chunks := streamState.consume(event)
+				if chatChunksCarryVisibleOutput(chunks) {
+					recordFirstTokenIfNil(&attemptMetrics.firstTokenMs, time.Since(attemptMetrics.startedAt))
+				}
+				return chunks, false
+			}
+
+			// Do not commit a downstream 200 until the upstream has produced output or
+			// completed. This allows a response.failed preamble to retry on another account.
+			var pendingChunks [][]any
+			streamReady := false
+			for !streamReady && !attemptMetrics.streamEnded {
+				select {
+				case result, ok := <-eventCh:
+					if !ok {
+						attemptMetrics.streamEnded = true
+						attemptMetrics.streamEndReason = "stream_reader_closed"
+						break
+					}
+					if result.err != nil {
+						attemptMetrics.streamEnded = true
+						attemptMetrics.streamEndReason = "read_error:" + result.err.Error()
+						break
+					}
+					if result.done {
+						attemptMetrics.streamEnded = true
+						if attemptMetrics.responseCompleted {
+							streamReady = true
+							attemptMetrics.streamEndReason = "done"
+						} else {
+							attemptMetrics.streamEndReason = "stream_ended_without_completion"
+						}
+						break
+					}
+					chunks, failed := processEvent(result.event)
+					if failed {
+						break
+					}
+					pendingChunks = append(pendingChunks, chunks)
+					streamReady = chatChunksCarryVisibleOutput(chunks) || attemptMetrics.responseCompleted
+				case <-c.Request.Context().Done():
+					attemptMetrics.streamEnded = true
+					attemptMetrics.streamEndReason = "request_context:" + c.Request.Context().Err().Error()
+				}
+			}
+
+			if !streamReady {
+				if cancelUpstream != nil {
+					cancelUpstream()
+				}
+				close(stopReader)
+				_ = resp.Body.Close()
+				s.accounts.Release(account.ID)
+				attemptMetrics.usage = streamUsage
+				if attemptMetrics.responseID == "" {
+					attemptMetrics.responseID = currentResponseID
+				}
+				errMessage := attemptMetrics.streamEndReason
+				s.logToolTrace(c, account, "chat_transformed_stream", requestedModel, upstreamCodexRequest.Model, attemptMetrics.streamEndReason, errMessage, toolTrace.summary())
+				s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, upstreamCodexRequest.Model, upstreamCodexRequest.PreviousResponseID, strictAffinity, attempt, attemptMetrics, nil, 0, 0, 0, false, errMessage)
+				s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, upstreamCodexRequest.Model, chatRequest.Stream, attempt, attemptMetrics, false, errMessage)
+				if !strictAffinity {
+					excludedAccountIDs = append(excludedAccountIDs, account.ID)
+					lastDecision = &proxyErrorDecision{Status: http.StatusBadGateway, Message: "Upstream stream failed before producing output"}
+					continue
+				}
+				writeProxyError(c, http.StatusBadGateway, errMessage, false)
+				return
+			}
+
+			c.Status(http.StatusOK)
+			c.Header("Content-Type", "text/event-stream")
+			c.Header("Cache-Control", "no-cache, no-transform")
 			initialChunk := streamState.initialRoleChunk()
 			toolTrace.observeChatChunk(initialChunk)
 			writeChatStreamChunk(wrapWriter{Writer: c.Writer}, initialChunk)
+			pendingIndex := 0
 			heartbeatTicker := time.NewTicker(downstreamHeartbeatInterval)
 			defer heartbeatTicker.Stop()
 			c.Stream(func(w io.Writer) bool {
+				select {
+				case <-c.Request.Context().Done():
+					attemptMetrics.streamEnded = true
+					attemptMetrics.streamEndReason = "request_context:" + c.Request.Context().Err().Error()
+					return false
+				default:
+				}
+				if pendingIndex < len(pendingChunks) {
+					for _, chunk := range pendingChunks[pendingIndex] {
+						toolTrace.observeChatChunk(chunk)
+						writeChatStreamChunk(w, chunk)
+					}
+					pendingIndex++
+					return true
+				}
 				select {
 				case <-heartbeatTicker.C:
 					writeSSEComment(w, "keepalive")
@@ -1270,49 +1385,33 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 					}
 					if result.done {
 						attemptMetrics.streamEnded = true
-						attemptMetrics.streamEndReason = "done"
-						_, _ = io.WriteString(w, "data: [DONE]\n\n")
+						if attemptMetrics.responseCompleted {
+							attemptMetrics.streamEndReason = "done"
+							_, _ = io.WriteString(w, "data: [DONE]\n\n")
+						} else {
+							attemptMetrics.streamEndReason = "stream_ended_without_completion"
+						}
 						return false
 					}
-					event := result.event
-					toolTrace.observeResponsesEvent(event)
-					attemptMetrics.eventCount++
-					attemptMetrics.eventTypeCounts[event.Event]++
-					if event.Event == "codex.rate_limits" {
-						s.applyRateLimitEvent(account.ID, event.Data)
-						return true
-					}
-					if event.Event == "keepalive" {
+					if result.event.Event == "keepalive" {
 						writeSSEComment(w, "keepalive")
 						return true
 					}
-					if usage, ok := extractUsageFromEvent(event); ok {
-						streamUsage = usage
-						attemptMetrics.usage = usage
-					}
-					if responseID := extractResponseIDFromEvent(event); responseID != "" {
-						currentResponseID = responseID
-						attemptMetrics.responseID = responseID
-					}
-					currentResponseID = recordResponseAffinity(s.affinity, event, currentResponseID, account.ID, upstreamCodexRequest.PromptCacheKey, upstreamTurnState, upstreamCodexRequest.Instructions)
-					chunks := streamState.consume(event)
-					if chatChunksCarryVisibleOutput(chunks) {
-						recordFirstTokenIfNil(&attemptMetrics.firstTokenMs, time.Since(attemptMetrics.startedAt))
+					chunks, failed := processEvent(result.event)
+					if failed {
+						return false
 					}
 					for _, chunk := range chunks {
 						toolTrace.observeChatChunk(chunk)
 						writeChatStreamChunk(w, chunk)
 					}
 					return true
-				case <-c.Request.Context().Done():
-					attemptMetrics.streamEnded = true
-					attemptMetrics.streamEndReason = "request_context:" + c.Request.Context().Err().Error()
-					return false
 				}
 			})
 			if cancelUpstream != nil {
 				cancelUpstream()
 			}
+			close(stopReader)
 			_ = resp.Body.Close()
 			s.accounts.Release(account.ID)
 			attemptMetrics.usage = streamUsage
@@ -2453,7 +2552,44 @@ func detachUpstreamContext(ctx context.Context) (context.Context, context.Cancel
 }
 
 func streamAttemptSucceeded(metrics requestAttemptMetrics) bool {
-	return metrics.streamEnded && metrics.streamEndReason == "done"
+	return metrics.streamEnded && metrics.streamEndReason == "done" && metrics.responseCompleted
+}
+
+func markStreamTerminalEvent(metrics *requestAttemptMetrics, event codex.SSEEvent) bool {
+	if metrics == nil {
+		return false
+	}
+	switch event.Event {
+	case "response.completed":
+		metrics.responseCompleted = true
+	case "response.failed":
+		metrics.streamEnded = true
+		metrics.streamEndReason = streamFailureMessage(event)
+		return true
+	}
+	return false
+}
+
+func streamFailureMessage(event codex.SSEEvent) string {
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Response struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(event.Data, &payload); err == nil {
+		if message := strings.TrimSpace(payload.Error.Message); message != "" {
+			return "upstream_response_failed: " + message
+		}
+		if message := strings.TrimSpace(payload.Response.Error.Message); message != "" {
+			return "upstream_response_failed: " + message
+		}
+	}
+	return "upstream_response_failed"
 }
 
 type upstreamSSEReadResult struct {
@@ -2973,6 +3109,7 @@ type requestAttemptMetrics struct {
 	eventTypeCounts   map[string]int
 	streamEnded       bool
 	streamEndReason   string
+	responseCompleted bool
 }
 
 func newRequestAttemptMetrics() requestAttemptMetrics {
