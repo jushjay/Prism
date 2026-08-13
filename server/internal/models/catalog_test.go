@@ -57,6 +57,9 @@ func TestMergeBackendEntriesOverlaysStaticCatalog(t *testing.T) {
 	if primary.IsDefault != true {
 		t.Fatalf("expected static default flag to be preserved")
 	}
+	if primary.DefaultReasoningEffort != "medium" {
+		t.Fatalf("expected static reasoning default to be preserved when backend omits it, got %q", primary.DefaultReasoningEffort)
+	}
 	if len(primary.SupportedReasoningEfforts) != 1 || primary.SupportedReasoningEfforts[0].ReasoningEffort != "medium" {
 		t.Fatalf("expected static reasoning efforts to be preserved when backend omits them")
 	}

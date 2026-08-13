@@ -89,7 +89,22 @@ pnpm build
 - `OPENAI_OAUTH_CLIENT_ID`：用于导入账号的 OAuth Client ID。
 - `DEFAULT_MODEL`：默认路由模型。
 - `DEFAULT_REASONING_EFFORT`：默认 reasoning effort。
+- `server/configs/models.yaml` 中每个模型的 `defaultReasoningEffort`：该模型未指定 reasoning effort 时使用的默认思考强度。请求显式指定的值优先，其次是模型映射中的思考强度，再其次是模型默认值，最后才使用 `DEFAULT_REASONING_EFFORT`。
 - `CURSOR_AUDIT_LOG_ENABLED`、`OPENAI_EGRESS_AUDIT_LOG_ENABLED`、`CUSTOM_EGRESS_AUDIT_LOG_ENABLED`：可选审计日志开关。
+
+例如：
+
+```yaml
+- id: gpt-5.6-luna
+  defaultReasoningEffort: max
+  supportedReasoningEfforts:
+    - { reasoningEffort: low }
+    - { reasoningEffort: medium }
+    - { reasoningEffort: high }
+    - { reasoningEffort: max }
+```
+
+请求 `gpt-5.6-luna` 时如果没有指定 reasoning effort，Prism 会向上游发送 `max`；如果请求指定了 `low`、`medium` 等值，则保留请求值。修改模型目录后重启后端。
 
 审计日志默认关闭。开启后，日志中可能包含敏感的请求体、响应体、请求头、账号标签以及客户端 IP 元数据。
 

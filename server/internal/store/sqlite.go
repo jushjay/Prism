@@ -209,6 +209,7 @@ func (s *SQLiteStore) migrate() error {
 			account_snapshot TEXT,
 			requested_model TEXT NOT NULL,
 			routed_model TEXT NOT NULL,
+			reasoning_effort TEXT NOT NULL DEFAULT '',
 			upstream_request_id TEXT,
 			response_id TEXT,
 			input_tokens INTEGER,
@@ -353,6 +354,7 @@ func (s *SQLiteStore) migrate() error {
 		`ALTER TABLE usage_totals_by_account ADD COLUMN total_cached_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE usage_totals_by_model ADD COLUMN total_cached_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE usage_totals_by_account_model ADD COLUMN total_cached_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE request_events ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, statement := range alterStatements {
 		if _, err := s.db.Exec(statement); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {

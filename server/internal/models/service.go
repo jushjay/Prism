@@ -43,12 +43,13 @@ type ManualModelInput struct {
 }
 
 type AccountCatalogCache struct {
-	AccountID     string    `json:"account_id"`
-	AccountEmail  string    `json:"account_email"`
-	ClientVersion string    `json:"client_version"`
-	FetchedAt     time.Time `json:"fetched_at"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	Models        []Info    `json:"models"`
+	AccountID                 string          `json:"account_id"`
+	AccountEmail              string          `json:"account_email"`
+	ClientVersion             string          `json:"client_version"`
+	FetchedAt                 time.Time       `json:"fetched_at"`
+	ExpiresAt                 time.Time       `json:"expires_at"`
+	Models                    []Info          `json:"models"`
+	ExplicitReasoningDefaults map[string]bool `json:"explicit_reasoning_defaults,omitempty"`
 }
 
 type cacheState struct {
@@ -81,12 +82,30 @@ type ModelMappingInput struct {
 }
 
 type ResolvedMapping struct {
-	TargetModel     string
+	TargetModel            string
+	ReasoningEffort        string
+	DefaultReasoningEffort string
+}
+
+type ModelReasoningDefaultInput struct {
+	ModelID         string
 	ReasoningEffort string
+}
+
+type ModelReasoningDefaultRecord struct {
+	ModelID                   string            `json:"model_id"`
+	DisplayName               string            `json:"display_name"`
+	DefaultReasoningEffort    string            `json:"default_reasoning_effort"`
+	SupportedReasoningEfforts []ReasoningEffort `json:"supported_reasoning_efforts"`
+	Configured                bool              `json:"configured"`
 }
 
 type mappingsState struct {
 	Items []ModelMappingRecord `json:"items"`
+}
+
+type reasoningDefaultsState struct {
+	Items map[string]string `json:"items"`
 }
 
 type Entry struct {
@@ -110,12 +129,13 @@ type AccountCatalogView struct {
 }
 
 type Service struct {
-	mu       sync.RWMutex
-	static   Catalog
-	caches   map[string]AccountCatalogCache
-	manual   []ManualModelRecord
-	mappings []ModelMappingRecord
-	cacheTTL time.Duration
+	mu                sync.RWMutex
+	static            Catalog
+	caches            map[string]AccountCatalogCache
+	manual            []ManualModelRecord
+	mappings          []ModelMappingRecord
+	reasoningDefaults map[string]string
+	cacheTTL          time.Duration
 
 	accounts *auth.AccountPool
 	client   *codex.Client
@@ -138,18 +158,19 @@ func NewService(
 	stateStore store.StateStore,
 ) (*Service, error) {
 	svc := &Service{
-		static:   static,
-		caches:   map[string]AccountCatalogCache{},
-		manual:   nil,
-		mappings: nil,
-		cacheTTL: 24 * time.Hour,
-		accounts: accounts,
-		client:   client,
-		version:  version,
-		db:       db,
-		store:    stateStore,
-		cfg:      cfg,
-		stopCh:   make(chan struct{}),
+		static:            static,
+		caches:            map[string]AccountCatalogCache{},
+		manual:            nil,
+		mappings:          nil,
+		reasoningDefaults: map[string]string{},
+		cacheTTL:          24 * time.Hour,
+		accounts:          accounts,
+		client:            client,
+		version:           version,
+		db:                db,
+		store:             stateStore,
+		cfg:               cfg,
+		stopCh:            make(chan struct{}),
 	}
 	if err := svc.load(); err != nil {
 		return nil, err
@@ -170,14 +191,34 @@ func (s *Service) load() error {
 	if err := s.store.Load(s.cfg.Storage.ModelMappingsFile, &mappings); err != nil {
 		return err
 	}
+	var reasoningDefaults reasoningDefaultsState
+	if path := strings.TrimSpace(s.cfg.Storage.ModelReasoningDefaultsFile); path != "" {
+		if err := s.store.Load(path, &reasoningDefaults); err != nil {
+			return err
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if cached.Accounts != nil {
 		s.caches = cached.Accounts
+		for accountID, cache := range s.caches {
+			for i := range cache.Models {
+				cache.Models[i].defaultReasoningExplicit = cache.ExplicitReasoningDefaults[cache.Models[i].ID]
+			}
+			s.caches[accountID] = cache
+		}
 	}
 	s.manual = manual.Models
 	s.mappings = mappings.Items
+	s.reasoningDefaults = map[string]string{}
+	for modelID, effort := range reasoningDefaults.Items {
+		modelID = strings.TrimSpace(modelID)
+		effort = strings.TrimSpace(effort)
+		if modelID != "" && effort != "" {
+			s.reasoningDefaults[modelID] = effort
+		}
+	}
 	return nil
 }
 
@@ -485,20 +526,55 @@ func (s *Service) GlobalCatalog() Catalog {
 	for _, cache := range s.caches {
 		cacheModels = append(cacheModels, cache)
 	}
+	reasoningDefaults := mapsClone(s.reasoningDefaults)
 	s.mu.RUnlock()
 
 	customModels := s.listAllDynamicModelInfo()
 
 	merged := make(map[string]Info, len(staticModels)+len(manualModels)+len(customModels))
 	order := make([]string, 0, len(staticModels)+len(manualModels)+len(customModels))
+	staticDefaults := make(map[string]string, len(staticModels))
+	for _, item := range staticModels {
+		if effort := strings.TrimSpace(item.DefaultReasoningEffort); effort != "" {
+			staticDefaults[item.ID] = effort
+		}
+	}
+	applyConfiguredDefault := func(item Info) Info {
+		if effort, ok := reasoningDefaults[item.ID]; ok {
+			item.DefaultReasoningEffort = effort
+			item.defaultReasoningExplicit = true
+		}
+		return item
+	}
+	withInheritedDefault := func(item Info) Info {
+		item = applyConfiguredDefault(item)
+		if _, configured := reasoningDefaults[item.ID]; configured {
+			return item
+		}
+		if effort, ok := staticDefaults[item.ID]; ok {
+			item.DefaultReasoningEffort = effort
+			item.defaultReasoningExplicit = true
+			return item
+		}
+		if !item.defaultReasoningExplicit {
+			if existing, ok := merged[item.ID]; ok && existing.defaultReasoningExplicit {
+				item.DefaultReasoningEffort = existing.DefaultReasoningEffort
+				item.defaultReasoningExplicit = true
+			}
+		}
+		return item
+	}
 
 	for _, item := range staticModels {
+		item = applyConfiguredDefault(item)
+		item.defaultReasoningExplicit = strings.TrimSpace(item.DefaultReasoningEffort) != ""
 		merged[item.ID] = item
 		order = append(order, item.ID)
 	}
 
 	for _, cache := range cacheModels {
 		for _, item := range cache.Models {
+			item = withInheritedDefault(item)
 			if _, exists := merged[item.ID]; !exists {
 				order = append(order, item.ID)
 			}
@@ -507,6 +583,7 @@ func (s *Service) GlobalCatalog() Catalog {
 	}
 
 	for _, item := range customModels {
+		item = withInheritedDefault(item)
 		if _, exists := merged[item.ID]; !exists {
 			order = append(order, item.ID)
 		}
@@ -514,6 +591,8 @@ func (s *Service) GlobalCatalog() Catalog {
 	}
 
 	for _, item := range manualModels {
+		item.Info = applyConfiguredDefault(item.Info)
+		item.Info.defaultReasoningExplicit = strings.TrimSpace(item.DefaultReasoningEffort) != ""
 		if _, exists := merged[item.ID]; !exists {
 			order = append(order, item.ID)
 		}
@@ -548,30 +627,142 @@ func (s *Service) ResolveMapping(modelID, accountID string) ResolvedMapping {
 	scopedAccountID := strings.TrimSpace(accountID)
 
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	var resolved ResolvedMapping
 	for _, item := range s.mappings {
 		if item.ApplyGlobal || item.AccountID != scopedAccountID {
 			continue
 		}
 		if item.ModelName == requested {
-			return ResolvedMapping{
+			resolved = ResolvedMapping{
 				TargetModel:     item.TargetModel,
 				ReasoningEffort: item.ReasoningEffort,
 			}
+			break
 		}
 	}
-	for _, item := range s.mappings {
-		if !item.ApplyGlobal {
+	if resolved.TargetModel == "" {
+		for _, item := range s.mappings {
+			if !item.ApplyGlobal {
+				continue
+			}
+			if item.ModelName == requested {
+				resolved = ResolvedMapping{
+					TargetModel:     item.TargetModel,
+					ReasoningEffort: item.ReasoningEffort,
+				}
+				break
+			}
+		}
+	}
+	if resolved.TargetModel == "" {
+		resolved.TargetModel = s.static.ResolveUpstreamID(requested)
+	}
+	s.mu.RUnlock()
+
+	resolved.DefaultReasoningEffort = s.defaultReasoningEffortForModel(resolved.TargetModel)
+	return resolved
+}
+
+func (s *Service) defaultReasoningEffortForModel(modelID string) string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return ""
+	}
+	s.mu.RLock()
+	override := strings.TrimSpace(s.reasoningDefaults[modelID])
+	s.mu.RUnlock()
+	if override != "" {
+		return override
+	}
+	staticModel, staticOK := s.static.Resolve(modelID)
+	if staticOK && strings.TrimSpace(staticModel.DefaultReasoningEffort) != "" {
+		return strings.TrimSpace(staticModel.DefaultReasoningEffort)
+	}
+	model, ok := s.GlobalCatalog().Resolve(modelID)
+	if ok && model.defaultReasoningExplicit && strings.TrimSpace(model.DefaultReasoningEffort) != "" {
+		return strings.TrimSpace(model.DefaultReasoningEffort)
+	}
+	if !staticOK {
+		return ""
+	}
+	return strings.TrimSpace(staticModel.DefaultReasoningEffort)
+}
+
+func (s *Service) ListModelReasoningDefaults() []ModelReasoningDefaultRecord {
+	catalog := s.GlobalCatalog()
+	s.mu.RLock()
+	configured := mapsClone(s.reasoningDefaults)
+	s.mu.RUnlock()
+
+	recordsByID := make(map[string]ModelReasoningDefaultRecord, len(catalog.Models)+len(configured))
+	for _, model := range catalog.Models {
+		supportedEfforts := slices.Clone(model.SupportedReasoningEfforts)
+		if supportedEfforts == nil {
+			supportedEfforts = []ReasoningEffort{}
+		}
+		recordsByID[model.ID] = ModelReasoningDefaultRecord{
+			ModelID:                   model.ID,
+			DisplayName:               defaultString(model.DisplayName, model.ID),
+			DefaultReasoningEffort:    model.DefaultReasoningEffort,
+			SupportedReasoningEfforts: supportedEfforts,
+			Configured:                configured[model.ID] != "",
+		}
+	}
+	for modelID, effort := range configured {
+		if _, exists := recordsByID[modelID]; exists {
 			continue
 		}
-		if item.ModelName == requested {
-			return ResolvedMapping{
-				TargetModel:     item.TargetModel,
-				ReasoningEffort: item.ReasoningEffort,
-			}
+		recordsByID[modelID] = ModelReasoningDefaultRecord{
+			ModelID:                modelID,
+			DisplayName:            modelID,
+			DefaultReasoningEffort: effort,
+			Configured:             true,
 		}
 	}
-	return ResolvedMapping{TargetModel: s.static.ResolveUpstreamID(requested)}
+
+	records := make([]ModelReasoningDefaultRecord, 0, len(recordsByID))
+	for _, record := range recordsByID {
+		records = append(records, record)
+	}
+	slices.SortFunc(records, func(a, b ModelReasoningDefaultRecord) int {
+		return strings.Compare(a.ModelID, b.ModelID)
+	})
+	return records
+}
+
+func (s *Service) UpsertModelReasoningDefault(input ModelReasoningDefaultInput) (ModelReasoningDefaultRecord, error) {
+	modelID := strings.TrimSpace(input.ModelID)
+	if modelID == "" {
+		return ModelReasoningDefaultRecord{}, errors.New("model id is required")
+	}
+	effort := strings.TrimSpace(input.ReasoningEffort)
+
+	s.mu.Lock()
+	if s.reasoningDefaults == nil {
+		s.reasoningDefaults = map[string]string{}
+	}
+	if effort == "" {
+		delete(s.reasoningDefaults, modelID)
+	} else {
+		s.reasoningDefaults[modelID] = effort
+	}
+	err := s.persistReasoningDefaultsLocked()
+	s.mu.Unlock()
+	if err != nil {
+		return ModelReasoningDefaultRecord{}, err
+	}
+
+	for _, record := range s.ListModelReasoningDefaults() {
+		if record.ModelID == modelID {
+			return record, nil
+		}
+	}
+	return ModelReasoningDefaultRecord{
+		ModelID:                modelID,
+		DisplayName:            modelID,
+		DefaultReasoningEffort: "",
+		Configured:             false,
+	}, nil
 }
 
 func (s *Service) AccountSupportsModel(account auth.Account, modelID string) (bool, bool) {
@@ -637,12 +828,30 @@ func (s *Service) getCache(accountID string) (AccountCatalogCache, bool) {
 func (s *Service) saveCache(cache AccountCatalogCache) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	cache.ExplicitReasoningDefaults = explicitReasoningDefaults(cache.Models)
 	s.caches[cache.AccountID] = cache
 	return s.persistCacheLocked()
 }
 
 func (s *Service) persistCacheLocked() error {
+	for accountID, cache := range s.caches {
+		cache.ExplicitReasoningDefaults = explicitReasoningDefaults(cache.Models)
+		s.caches[accountID] = cache
+	}
 	return s.store.Save(s.cfg.Storage.ModelCacheFile, cacheState{Accounts: s.caches})
+}
+
+func explicitReasoningDefaults(items []Info) map[string]bool {
+	out := make(map[string]bool)
+	for _, item := range items {
+		if item.defaultReasoningExplicit {
+			out[item.ID] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *Service) persistManualLocked() error {
@@ -651,6 +860,14 @@ func (s *Service) persistManualLocked() error {
 
 func (s *Service) persistMappingsLocked() error {
 	return s.store.Save(s.cfg.Storage.ModelMappingsFile, mappingsState{Items: s.mappings})
+}
+
+func (s *Service) persistReasoningDefaultsLocked() error {
+	path := strings.TrimSpace(s.cfg.Storage.ModelReasoningDefaultsFile)
+	if path == "" {
+		return errors.New("model reasoning defaults storage path is not configured")
+	}
+	return s.store.Save(path, reasoningDefaultsState{Items: mapsClone(s.reasoningDefaults)})
 }
 
 func toEntries(models []Info, source ModelSource) []Entry {

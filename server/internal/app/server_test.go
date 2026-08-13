@@ -91,6 +91,61 @@ func TestCollectReasoningText(t *testing.T) {
 	}
 }
 
+func TestApplyDefaultReasoningEffortUsesModelDefaultAndPreservesExplicitValue(t *testing.T) {
+	tests := []struct {
+		name           string
+		mapping        models.ResolvedMapping
+		hasExplicit    bool
+		initialEffort  string
+		globalEffort   string
+		expectedEffort string
+	}{
+		{
+			name: "mapping overrides model default",
+			mapping: models.ResolvedMapping{
+				ReasoningEffort:        "high",
+				DefaultReasoningEffort: "max",
+			},
+			globalEffort:   "medium",
+			expectedEffort: "high",
+		},
+		{
+			name: "model default overrides global default",
+			mapping: models.ResolvedMapping{
+				DefaultReasoningEffort: "max",
+			},
+			globalEffort:   "medium",
+			expectedEffort: "max",
+		},
+		{
+			name:           "global default is fallback",
+			globalEffort:   "medium",
+			expectedEffort: "medium",
+		},
+		{
+			name:           "explicit request wins",
+			hasExplicit:    true,
+			initialEffort:  "low",
+			mapping:        models.ResolvedMapping{DefaultReasoningEffort: "max"},
+			globalEffort:   "medium",
+			expectedEffort: "low",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := codex.ResponsesRequest{}
+			if test.initialEffort != "" {
+				request.Reasoning = &codex.Reasoning{Effort: test.initialEffort}
+			}
+			applyDefaultReasoningEffort(&request, test.mapping, test.hasExplicit, test.globalEffort)
+			if request.Reasoning == nil || request.Reasoning.Effort != test.expectedEffort {
+				t.Fatalf("reasoning = %+v, want %q", request.Reasoning, test.expectedEffort)
+			}
+		})
+	}
+}
+
 func TestParsePassthroughUsageForChatCompletionsSSE(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Content-Type", "text/event-stream")
@@ -877,6 +932,7 @@ func TestHandleResponsesRoutesByPersistedAccountModels(t *testing.T) {
 	}
 
 	customHits := 0
+	var customRequest codex.ResponsesRequest
 	customUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
 			w.Header().Set("Content-Type", "application/json")
@@ -887,6 +943,9 @@ func TestHandleResponsesRoutesByPersistedAccountModels(t *testing.T) {
 			t.Fatalf("unexpected custom upstream path %q", r.URL.Path)
 		}
 		customHits++
+		if err := json.NewDecoder(r.Body).Decode(&customRequest); err != nil {
+			t.Fatalf("decode custom request: %v", err)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: response.completed\n"))
 		_, _ = w.Write([]byte(`data: {"response":{"id":"resp_custom","model":"glm-5.1","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}` + "\n\n"))
@@ -915,7 +974,7 @@ func TestHandleResponsesRoutesByPersistedAccountModels(t *testing.T) {
 	if _, err := sqliteStore.DB().Exec(`
 		INSERT INTO custom_account_models (account_id, model_id, display_name, model_object, owned_by, created_unix, source_payload, fetched_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, fflycodeAccount.ID, "glm-5.1", "GLM-5.1", "model", "z-ai", now.Unix(), `{}`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	`, fflycodeAccount.ID, "glm-5.1", "GLM-5.1", "model", "z-ai", now.Unix(), `{"id":"glm-5.1","default_reasoning_effort":"max","supported_reasoning_efforts":[{"effort":"max"}]}`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("insert custom_account_models: %v", err)
 	}
 	if _, err := sqliteStore.DB().Exec(`
@@ -999,6 +1058,9 @@ func TestHandleResponsesRoutesByPersistedAccountModels(t *testing.T) {
 	}
 	if customHits != 1 {
 		t.Fatalf("expected request to route to custom account exactly once, got %d", customHits)
+	}
+	if customRequest.Reasoning == nil || customRequest.Reasoning.Effort != "max" {
+		t.Fatalf("expected model default reasoning effort max, got %+v", customRequest.Reasoning)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {

@@ -55,6 +55,7 @@ func TestServiceRecordPersistsRequestEvent(t *testing.T) {
 		},
 		RequestedModel:    "OpenAI-gpt5",
 		RoutedModel:       "gpt-5.4",
+		ReasoningEffort:   "max",
 		UpstreamRequestID: "req-123",
 		ResponseID:        "resp-123",
 		InputTokens:       &inputTokens,
@@ -95,6 +96,14 @@ func TestServiceRecordPersistsRequestEvent(t *testing.T) {
 	}
 	if gotSourcePath != "/v1/chat/completions" || gotRequestedModel != "OpenAI-gpt5" || gotRoutedModel != "gpt-5.4" || gotRequestID != "req-123" || gotResponseID != "resp-123" {
 		t.Fatalf("unexpected text fields source=%q requested=%q routed=%q reqID=%q respID=%q", gotSourcePath, gotRequestedModel, gotRoutedModel, gotRequestID, gotResponseID)
+	}
+
+	result, err := service.Events(EventQuery{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("Events() error = %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ReasoningEffort != "max" {
+		t.Fatalf("expected reasoning effort max, got %+v", result.Items)
 	}
 }
 

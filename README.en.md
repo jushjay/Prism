@@ -89,7 +89,22 @@ The main configuration surface is `.env`. Important values include:
 - `OPENAI_OAUTH_CLIENT_ID`: OAuth client ID for account import.
 - `DEFAULT_MODEL`: default routed model.
 - `DEFAULT_REASONING_EFFORT`: default reasoning effort.
+- `defaultReasoningEffort` for each model in `server/configs/models.yaml`: the model-level fallback when a request omits reasoning effort. Explicit request values take precedence, followed by model mappings, the model default, and finally `DEFAULT_REASONING_EFFORT`.
 - `CURSOR_AUDIT_LOG_ENABLED`, `OPENAI_EGRESS_AUDIT_LOG_ENABLED`, `CUSTOM_EGRESS_AUDIT_LOG_ENABLED`: optional audit logging flags.
+
+For example:
+
+```yaml
+- id: gpt-5.6-luna
+  defaultReasoningEffort: max
+  supportedReasoningEfforts:
+    - { reasoningEffort: low }
+    - { reasoningEffort: medium }
+    - { reasoningEffort: high }
+    - { reasoningEffort: max }
+```
+
+When a request for `gpt-5.6-luna` omits reasoning effort, Prism sends `max` upstream. An explicitly supplied value such as `low` or `medium` is preserved. Restart the backend after changing the model catalog.
 
 Audit logging is disabled by default. If enabled, logs can contain sensitive request bodies, response bodies, headers, account labels, and client IP metadata.
 

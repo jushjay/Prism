@@ -209,7 +209,7 @@ func (s *Service) loadPersistedAccountModels(account auth.Account, modelTable, s
 		return accountModelSyncState{}, nil, err
 	}
 	rows, err := s.db.Query(`
-		SELECT model_id, display_name, model_object, owned_by, created_unix
+		SELECT model_id, display_name, model_object, owned_by, created_unix, source_payload
 		FROM `+modelTable+`
 		WHERE account_id = ?
 		ORDER BY model_id ASC
@@ -221,16 +221,40 @@ func (s *Service) loadPersistedAccountModels(account auth.Account, modelTable, s
 
 	items := make([]Info, 0)
 	for rows.Next() {
-		var info Info
-		if err := rows.Scan(&info.ID, &info.DisplayName, &info.Object, &info.OwnedBy, &info.Created); err != nil {
+		var (
+			info          Info
+			sourcePayload sql.NullString
+		)
+		if err := rows.Scan(&info.ID, &info.DisplayName, &info.Object, &info.OwnedBy, &info.Created, &sourcePayload); err != nil {
 			return accountModelSyncState{}, nil, err
 		}
+		info = enrichPersistedModelInfo(info, sourcePayload.String)
 		if strings.TrimSpace(info.DisplayName) == "" {
 			info.DisplayName = info.ID
 		}
 		items = append(items, info)
 	}
 	return state, items, rows.Err()
+}
+
+func enrichPersistedModelInfo(info Info, sourcePayload string) Info {
+	if strings.TrimSpace(sourcePayload) == "" {
+		return info
+	}
+	var raw BackendModelEntry
+	if err := json.Unmarshal([]byte(sourcePayload), &raw); err != nil {
+		return info
+	}
+	normalized, ok := normalizeBackendModel(raw)
+	if !ok || normalized.ID != info.ID {
+		return info
+	}
+	info.DefaultReasoningEffort = normalized.DefaultReasoningEffort
+	info.defaultReasoningExplicit = normalized.defaultReasoningExplicit
+	info.SupportedReasoningEfforts = normalized.SupportedReasoningEfforts
+	info.InputModalities = normalized.InputModalities
+	info.OutputModalities = normalized.OutputModalities
+	return info
 }
 
 func (s *Service) accountModelSyncState(accountID, table string) (accountModelSyncState, error) {
@@ -275,7 +299,11 @@ func (s *Service) replaceAccountModels(provider auth.AccountProvider, accountID 
 	}
 	rawByID := make(map[string]map[string]any, len(rawModels))
 	for _, item := range rawModels {
-		id, _ := item["id"].(string)
+		entries := DecodeBackendEntries([]map[string]any{item})
+		if len(entries) == 0 {
+			continue
+		}
+		id := backendModelID(entries[0])
 		if strings.TrimSpace(id) == "" {
 			continue
 		}
@@ -341,8 +369,8 @@ func (s *Service) listAllDynamicModelInfo() []Info {
 		return nil
 	}
 	queries := []string{
-		`SELECT model_id, display_name, model_object, owned_by, created_unix, updated_at FROM custom_account_models`,
-		`SELECT model_id, display_name, model_object, owned_by, created_unix, updated_at FROM openai_account_models`,
+		`SELECT model_id, display_name, model_object, owned_by, created_unix, updated_at, source_payload FROM custom_account_models`,
+		`SELECT model_id, display_name, model_object, owned_by, created_unix, updated_at, source_payload FROM openai_account_models`,
 	}
 	seen := map[string]struct{}{}
 	items := make([]Info, 0)
@@ -353,10 +381,11 @@ func (s *Service) listAllDynamicModelInfo() []Info {
 		}
 		for rows.Next() {
 			var (
-				info      Info
-				updatedAt string
+				info          Info
+				updatedAt     string
+				sourcePayload sql.NullString
 			)
-			if err := rows.Scan(&info.ID, &info.DisplayName, &info.Object, &info.OwnedBy, &info.Created, &updatedAt); err != nil {
+			if err := rows.Scan(&info.ID, &info.DisplayName, &info.Object, &info.OwnedBy, &info.Created, &updatedAt, &sourcePayload); err != nil {
 				_ = rows.Close()
 				return items
 			}
@@ -364,6 +393,7 @@ func (s *Service) listAllDynamicModelInfo() []Info {
 				continue
 			}
 			seen[info.ID] = struct{}{}
+			info = enrichPersistedModelInfo(info, sourcePayload.String)
 			if strings.TrimSpace(info.DisplayName) == "" {
 				info.DisplayName = info.ID
 			}

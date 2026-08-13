@@ -113,6 +113,7 @@ func NewServer() (*Server, error) {
 		cfg.Storage.SettingsFile,
 		cfg.Storage.ProxiesFile,
 		cfg.Storage.ModelCacheFile,
+		cfg.Storage.ModelReasoningDefaultsFile,
 		cfg.Storage.ManualModelsFile,
 		cfg.Storage.ModelMappingsFile,
 		cfg.Storage.UsageStatsFile,
@@ -316,6 +317,8 @@ func (s *Server) registerRoutes() {
 	s.engine.GET("/admin/settings", s.handleSettings)
 	s.engine.GET("/admin/models/accounts/:id", s.handleAdminAccountModels)
 	s.engine.GET("/admin/models/custom", s.handleAdminListCustomAccountModels)
+	s.engine.GET("/admin/models/reasoning-defaults", s.handleAdminListModelReasoningDefaults)
+	s.engine.POST("/admin/models/reasoning-defaults", s.handleAdminUpsertModelReasoningDefault)
 	s.engine.POST("/admin/models/accounts/:id/refresh", s.handleAdminRefreshAccountModels)
 	s.engine.POST("/admin/models/manual", s.handleAdminManualModelUpsert)
 	s.engine.GET("/admin/models/mappings", s.handleAdminListModelMappings)
@@ -865,6 +868,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 			return
 		}
 		attemptMetrics := newRequestAttemptMetrics()
+		attemptMetrics.reasoningEffort = reasoningEffortForRequest(request)
 		if shouldPassthroughCustomAccount(account) {
 			if supported, known := s.models.AccountSupportsModel(account, requestedModel); known && !supported {
 				s.accounts.Release(account.ID)
@@ -907,7 +911,8 @@ func (s *Server) handleResponses(c *gin.Context) {
 		upstreamRequest := request
 		resolvedMapping := s.models.ResolveMapping(request.Model, account.ID)
 		upstreamRequest.Model = resolvedMapping.TargetModel
-		applyMappedReasoningEffort(&upstreamRequest, resolvedMapping.ReasoningEffort, hasExplicitReasoning)
+		applyDefaultReasoningEffort(&upstreamRequest, resolvedMapping, hasExplicitReasoning, s.cfg.Model.DefaultReasoningEffort)
+		attemptMetrics.reasoningEffort = reasoningEffortForRequest(upstreamRequest)
 		if supported, known := s.models.AccountSupportsModel(account, upstreamRequest.Model); known && !supported {
 			s.accounts.Release(account.ID)
 			excludedAccountIDs = append(excludedAccountIDs, account.ID)
@@ -1168,7 +1173,11 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 			return
 		}
 		attemptMetrics := newRequestAttemptMetrics()
+		attemptMetrics.reasoningEffort = reasoningEffortForRequest(codexRequest)
 		if shouldPassthroughCustomAccount(account) {
+			if !chatRequest.HasExplicitReasoning {
+				attemptMetrics.reasoningEffort = ""
+			}
 			if supported, known := s.models.AccountSupportsModel(account, requestedModel); known && !supported {
 				s.accounts.Release(account.ID)
 				excludedAccountIDs = append(excludedAccountIDs, account.ID)
@@ -1210,7 +1219,8 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		upstreamCodexRequest := codexRequest
 		resolvedMapping := s.models.ResolveMapping(codexRequest.Model, account.ID)
 		upstreamCodexRequest.Model = resolvedMapping.TargetModel
-		applyMappedReasoningEffort(&upstreamCodexRequest, resolvedMapping.ReasoningEffort, hasExplicitReasoning)
+		applyDefaultReasoningEffort(&upstreamCodexRequest, resolvedMapping, hasExplicitReasoning, s.cfg.Model.DefaultReasoningEffort)
+		attemptMetrics.reasoningEffort = reasoningEffortForRequest(upstreamCodexRequest)
 		if supported, known := s.models.AccountSupportsModel(account, upstreamCodexRequest.Model); known && !supported {
 			s.accounts.Release(account.ID)
 			excludedAccountIDs = append(excludedAccountIDs, account.ID)
@@ -2148,6 +2158,36 @@ func (s *Server) handleAdminListCustomAccountModels(c *gin.Context) {
 	c.JSON(http.StatusOK, items)
 }
 
+func (s *Server) handleAdminListModelReasoningDefaults(c *gin.Context) {
+	if !s.requireDashboardSession(c) {
+		return
+	}
+	c.JSON(http.StatusOK, s.models.ListModelReasoningDefaults())
+}
+
+func (s *Server) handleAdminUpsertModelReasoningDefault(c *gin.Context) {
+	if !s.requireDashboardSession(c) {
+		return
+	}
+	var payload struct {
+		ModelID         string `json:"modelId"`
+		ReasoningEffort string `json:"reasoningEffort"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	record, err := s.models.UpsertModelReasoningDefault(models.ModelReasoningDefaultInput{
+		ModelID:         payload.ModelID,
+		ReasoningEffort: payload.ReasoningEffort,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "model": record})
+}
+
 func (s *Server) handleAdminManualModelUpsert(c *gin.Context) {
 	if !s.requireDashboardSession(c) {
 		return
@@ -2850,6 +2890,7 @@ func (s *Server) recordRequestAttempt(account auth.Account, sourcePath, requeste
 		AccountSnapshot:    &snapshot,
 		RequestedModel:     requestedModel,
 		RoutedModel:        routedModel,
+		ReasoningEffort:    metrics.reasoningEffort,
 		UpstreamRequestID:  metrics.upstreamRequestID,
 		ResponseID:         metrics.responseID,
 		InputTokens:        inputTokens,
@@ -3110,6 +3151,7 @@ type requestAttemptMetrics struct {
 	streamEnded       bool
 	streamEndReason   string
 	responseCompleted bool
+	reasoningEffort   string
 }
 
 func newRequestAttemptMetrics() requestAttemptMetrics {
@@ -3117,6 +3159,13 @@ func newRequestAttemptMetrics() requestAttemptMetrics {
 		startedAt:       time.Now(),
 		eventTypeCounts: map[string]int{},
 	}
+}
+
+func reasoningEffortForRequest(request codex.ResponsesRequest) string {
+	if request.Reasoning == nil {
+		return ""
+	}
+	return strings.TrimSpace(request.Reasoning.Effort)
 }
 
 type toolTraceAccumulator struct {
@@ -3772,9 +3821,18 @@ func collectReasoningText(events []codex.SSEEvent) string {
 	return fallback
 }
 
-func applyMappedReasoningEffort(request *codex.ResponsesRequest, mappedEffort string, hasExplicitReasoning bool) {
-	effort := strings.TrimSpace(mappedEffort)
-	if effort == "" || hasExplicitReasoning {
+func applyDefaultReasoningEffort(request *codex.ResponsesRequest, mapping models.ResolvedMapping, hasExplicitReasoning bool, globalEffort string) {
+	if hasExplicitReasoning {
+		return
+	}
+	effort := strings.TrimSpace(mapping.ReasoningEffort)
+	if effort == "" {
+		effort = strings.TrimSpace(mapping.DefaultReasoningEffort)
+	}
+	if effort == "" {
+		effort = strings.TrimSpace(globalEffort)
+	}
+	if effort == "" {
 		return
 	}
 	if request.Reasoning == nil {

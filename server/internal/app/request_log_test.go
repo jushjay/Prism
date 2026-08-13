@@ -49,7 +49,7 @@ func TestHandleResponsesRecordsRequestEvent(t *testing.T) {
 	})
 	defer sqliteStore.Close()
 
-	body := `{"model":"deepseek-chat","stream":false,"input":[{"role":"user","content":"hi"}]}`
+	body := `{"model":"deepseek-chat","stream":false,"reasoning":{"effort":"max"},"input":[{"role":"user","content":"hi"}]}`
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -68,18 +68,21 @@ func TestHandleResponsesRecordsRequestEvent(t *testing.T) {
 		t.Fatalf("expected 1 request event, got %d", count)
 	}
 
-	var sourcePath, requestedModel, routedModel, upstreamRequestID, responseID string
+	var sourcePath, requestedModel, routedModel, reasoningEffort, upstreamRequestID, responseID string
 	var success, requestStream, durationMs int
 	var firstTokenMs sql.NullInt64
 	if err := sqliteStore.DB().QueryRow(`
-		SELECT source_path, requested_model, routed_model, upstream_request_id, response_id, success, request_stream, duration_ms, first_token_ms
+		SELECT source_path, requested_model, routed_model, reasoning_effort, upstream_request_id, response_id, success, request_stream, duration_ms, first_token_ms
 		FROM request_events
 		LIMIT 1
-	`).Scan(&sourcePath, &requestedModel, &routedModel, &upstreamRequestID, &responseID, &success, &requestStream, &durationMs, &firstTokenMs); err != nil {
+	`).Scan(&sourcePath, &requestedModel, &routedModel, &reasoningEffort, &upstreamRequestID, &responseID, &success, &requestStream, &durationMs, &firstTokenMs); err != nil {
 		t.Fatalf("select request_events: %v", err)
 	}
 	if sourcePath != "/v1/responses" || requestedModel != "deepseek-chat" || routedModel != "deepseek-chat" {
 		t.Fatalf("unexpected model/source fields source=%q requested=%q routed=%q", sourcePath, requestedModel, routedModel)
+	}
+	if reasoningEffort != "max" {
+		t.Fatalf("expected reasoning effort max, got %q", reasoningEffort)
 	}
 	if upstreamRequestID != "req-success-1" || responseID != "resp_success_1" {
 		t.Fatalf("unexpected request/response ids req=%q resp=%q", upstreamRequestID, responseID)

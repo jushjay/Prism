@@ -30,6 +30,7 @@ type Info struct {
 	InputModalities           []string          `yaml:"inputModalities" json:"inputModalities"`
 	OutputModalities          []string          `yaml:"outputModalities" json:"outputModalities"`
 	Upgrade                   any               `yaml:"upgrade" json:"upgrade"`
+	defaultReasoningExplicit  bool              `yaml:"-" json:"-"`
 }
 
 type ReasoningEffort struct {
@@ -83,6 +84,9 @@ func Load(path string) (Catalog, error) {
 	var catalog Catalog
 	if err := yaml.Unmarshal(raw, &catalog); err != nil {
 		return Catalog{}, err
+	}
+	for i := range catalog.Models {
+		catalog.Models[i].defaultReasoningExplicit = strings.TrimSpace(catalog.Models[i].DefaultReasoningEffort) != ""
 	}
 	return catalog, nil
 }
@@ -173,9 +177,10 @@ func (c Catalog) MergeBackendEntries(entries []BackendModelEntry) Catalog {
 			if hasExplicitEfforts {
 				out.SupportedReasoningEfforts = normalized.SupportedReasoningEfforts
 			}
-			if normalized.DefaultReasoningEffort != "" {
+			if strings.TrimSpace(out.DefaultReasoningEffort) == "" && normalized.defaultReasoningExplicit {
 				out.DefaultReasoningEffort = normalized.DefaultReasoningEffort
 			}
+			out.defaultReasoningExplicit = strings.TrimSpace(out.DefaultReasoningEffort) != ""
 			if len(normalized.InputModalities) > 0 {
 				out.InputModalities = normalized.InputModalities
 			}
@@ -256,7 +261,7 @@ func normalizeBackendModel(raw BackendModelEntry) (Info, bool) {
 	if len(efforts) == 0 {
 		efforts = []ReasoningEffort{{ReasoningEffort: "medium", Description: "Default"}}
 	}
-
+	defaultReasoningExplicit := strings.TrimSpace(raw.DefaultReasoningEffort) != "" || strings.TrimSpace(raw.DefaultReasoningLevel) != ""
 	defaultReasoning := raw.DefaultReasoningEffort
 	if defaultReasoning == "" {
 		defaultReasoning = raw.DefaultReasoningLevel
@@ -283,6 +288,7 @@ func normalizeBackendModel(raw BackendModelEntry) (Info, bool) {
 		InputModalities:           slices.Clone(inputModalities),
 		OutputModalities:          slices.Clone(raw.OutputModalities),
 		Upgrade:                   raw.Upgrade,
+		defaultReasoningExplicit:  defaultReasoningExplicit,
 	}, hasExplicitEfforts
 }
 

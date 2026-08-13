@@ -66,13 +66,42 @@ func TestServiceUpsertManualModelAndGlobalCatalog(t *testing.T) {
 	}
 }
 
+func TestGlobalCatalogPreservesExplicitDynamicReasoningDefault(t *testing.T) {
+	svc := &Service{
+		static: Catalog{
+			Models: []Info{{ID: "gpt-5.4", DefaultReasoningEffort: "max"}},
+		},
+		caches: map[string]AccountCatalogCache{
+			"account-a": {
+				Models: []Info{{ID: "gpt-5.5", DefaultReasoningEffort: "medium"}},
+			},
+			"account-b": {
+				Models: []Info{{ID: "gpt-5.5", DefaultReasoningEffort: "high", defaultReasoningExplicit: true}},
+			},
+		},
+	}
+
+	model, ok := svc.GlobalCatalog().Resolve("gpt-5.5")
+	if !ok {
+		t.Fatal("expected dynamic model in global catalog")
+	}
+	if model.DefaultReasoningEffort != "high" {
+		t.Fatalf("expected explicit dynamic default to win over fallback, got %q", model.DefaultReasoningEffort)
+	}
+
+	staticModel, ok := svc.GlobalCatalog().Resolve("gpt-5.4")
+	if !ok || staticModel.DefaultReasoningEffort != "max" {
+		t.Fatalf("expected static project default to be preserved, got %+v", staticModel)
+	}
+}
+
 func TestServiceResolveMappedModelID(t *testing.T) {
 	dir := t.TempDir()
 	accountPool := &auth.AccountPool{}
 	svc := &Service{
 		static: Catalog{
 			Models: []Info{
-				{ID: "gpt-5.4", DisplayName: "GPT-5.4"},
+				{ID: "gpt-5.4", DisplayName: "GPT-5.4", DefaultReasoningEffort: "max"},
 			},
 		},
 		mappings: []ModelMappingRecord{
@@ -118,6 +147,64 @@ func TestServiceResolveMappedModelID(t *testing.T) {
 	}
 	if mapping := svc.ResolveMapping("got-5.4", "account-b"); mapping.TargetModel != "gpt-5.4" || mapping.ReasoningEffort != "low" {
 		t.Fatalf("expected global mapping with reasoning effort, got %+v", mapping)
+	}
+	if mapping := svc.ResolveMapping("gpt-5.4", "account-b"); mapping.DefaultReasoningEffort != "max" {
+		t.Fatalf("expected model default reasoning effort max, got %+v", mapping)
+	}
+}
+
+func TestServiceModelReasoningDefaultOverride(t *testing.T) {
+	dir := t.TempDir()
+	svc := &Service{
+		static: Catalog{
+			Models: []Info{{
+				ID:                     "gpt-5.6-luna",
+				DisplayName:            "GPT-5.6 Luna",
+				DefaultReasoningEffort: "medium",
+				SupportedReasoningEfforts: []ReasoningEffort{
+					{ReasoningEffort: "medium"},
+					{ReasoningEffort: "max"},
+				},
+			}},
+		},
+		reasoningDefaults: map[string]string{},
+		store:             store.NewJSONStore(),
+		cfg: config.Config{
+			Storage: config.StorageConfig{
+				ModelReasoningDefaultsFile: filepath.Join(dir, "model-reasoning-defaults.json"),
+			},
+		},
+	}
+
+	record, err := svc.UpsertModelReasoningDefault(ModelReasoningDefaultInput{
+		ModelID:         "gpt-5.6-luna",
+		ReasoningEffort: "max",
+	})
+	if err != nil {
+		t.Fatalf("expected reasoning default upsert to succeed: %v", err)
+	}
+	if !record.Configured || record.DefaultReasoningEffort != "max" {
+		t.Fatalf("expected configured max default, got %+v", record)
+	}
+	if resolved := svc.ResolveMapping("gpt-5.6-luna", ""); resolved.DefaultReasoningEffort != "max" {
+		t.Fatalf("expected configured default to resolve to max, got %+v", resolved)
+	}
+
+	if _, err := svc.UpsertModelReasoningDefault(ModelReasoningDefaultInput{
+		ModelID: "gpt-5.6-luna",
+	}); err != nil {
+		t.Fatalf("expected reasoning default clear to succeed: %v", err)
+	}
+	if resolved := svc.ResolveMapping("gpt-5.6-luna", ""); resolved.DefaultReasoningEffort != "medium" {
+		t.Fatalf("expected cleared default to restore medium, got %+v", resolved)
+	}
+
+	var persisted reasoningDefaultsState
+	if err := svc.store.Load(svc.cfg.Storage.ModelReasoningDefaultsFile, &persisted); err != nil {
+		t.Fatalf("expected reasoning defaults state to be readable: %v", err)
+	}
+	if len(persisted.Items) != 0 {
+		t.Fatalf("expected cleared reasoning default to be removed from storage, got %+v", persisted.Items)
 	}
 }
 
@@ -311,7 +398,7 @@ func TestGetCustomAccountCatalogRefreshesFromUpstreamAndPersists(t *testing.T) {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"glm-4.5","object":"model","created":1753632000,"owned_by":"z-ai"}]}`))
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"glm-4.5","object":"model","created":1753632000,"owned_by":"z-ai","default_reasoning_effort":"max","supported_reasoning_efforts":[{"effort":"max","description":"Deepest reasoning"}]}]}`))
 	}))
 	defer upstream.Close()
 
@@ -358,6 +445,12 @@ func TestGetCustomAccountCatalogRefreshesFromUpstreamAndPersists(t *testing.T) {
 	model := view.DynamicModels[0]
 	if model.ID != "glm-4.5" || model.Object != "model" || model.OwnedBy != "z-ai" || model.Created != 1753632000 {
 		t.Fatalf("unexpected model %+v", model)
+	}
+	if model.DefaultReasoningEffort != "max" {
+		t.Fatalf("expected dynamic model default reasoning effort max, got %q", model.DefaultReasoningEffort)
+	}
+	if mapping := svc.ResolveMapping("glm-4.5", account.ID); mapping.DefaultReasoningEffort != "max" {
+		t.Fatalf("expected persisted dynamic model default reasoning effort max, got %+v", mapping)
 	}
 	var count int
 	if err := sqliteStore.DB().QueryRow(`SELECT COUNT(1) FROM custom_account_models WHERE account_id = ?`, account.ID).Scan(&count); err != nil {

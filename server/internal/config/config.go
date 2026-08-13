@@ -61,18 +61,19 @@ type AuditConfig struct {
 }
 
 type StorageConfig struct {
-	BaseDir           string
-	DBFile            string
-	JSONArchiveDir    string
-	AccountsFile      string
-	SettingsFile      string
-	ProxiesFile       string
-	ModelCatalogFile  string
-	ModelCacheFile    string
-	ManualModelsFile  string
-	ModelMappingsFile string
-	UsageStatsFile    string
-	VersionStateFile  string
+	BaseDir                    string
+	DBFile                     string
+	JSONArchiveDir             string
+	AccountsFile               string
+	SettingsFile               string
+	ProxiesFile                string
+	ModelCatalogFile           string
+	ModelCacheFile             string
+	ModelReasoningDefaultsFile string
+	ManualModelsFile           string
+	ModelMappingsFile          string
+	UsageStatsFile             string
+	VersionStateFile           string
 }
 
 type WebConfig struct {
@@ -128,18 +129,19 @@ func Load() Config {
 			CustomEgressLogFile:     getEnv("CUSTOM_EGRESS_AUDIT_LOG_FILE", filepath.Join(dataDir, "logs", "custom-egress.jsonl")),
 		},
 		Storage: StorageConfig{
-			BaseDir:           dataDir,
-			DBFile:            getEnv("STORAGE_DB_FILE", filepath.Join(dbDir, "prism.db")),
-			JSONArchiveDir:    filepath.Join(dataDir, "json-archive"),
-			AccountsFile:      filepath.Join(dataDir, "accounts.json"),
-			SettingsFile:      filepath.Join(dataDir, "settings.json"),
-			ProxiesFile:       filepath.Join(dataDir, "proxies.json"),
-			ModelCatalogFile:  filepath.Join(root, "server", "configs", "models.yaml"),
-			ModelCacheFile:    filepath.Join(dataDir, "model-cache.json"),
-			ManualModelsFile:  filepath.Join(dataDir, "manual-models.json"),
-			ModelMappingsFile: filepath.Join(dataDir, "model-mappings.json"),
-			UsageStatsFile:    filepath.Join(dataDir, "usage-stats.json"),
-			VersionStateFile:  versionStateFile,
+			BaseDir:                    dataDir,
+			DBFile:                     getEnv("STORAGE_DB_FILE", filepath.Join(dbDir, "prism.db")),
+			JSONArchiveDir:             filepath.Join(dataDir, "json-archive"),
+			AccountsFile:               filepath.Join(dataDir, "accounts.json"),
+			SettingsFile:               filepath.Join(dataDir, "settings.json"),
+			ProxiesFile:                filepath.Join(dataDir, "proxies.json"),
+			ModelCatalogFile:           filepath.Join(root, "server", "configs", "models.yaml"),
+			ModelCacheFile:             filepath.Join(dataDir, "model-cache.json"),
+			ModelReasoningDefaultsFile: filepath.Join(dataDir, "model-reasoning-defaults.json"),
+			ManualModelsFile:           filepath.Join(dataDir, "manual-models.json"),
+			ModelMappingsFile:          filepath.Join(dataDir, "model-mappings.json"),
+			UsageStatsFile:             filepath.Join(dataDir, "usage-stats.json"),
+			VersionStateFile:           versionStateFile,
 		},
 		Web: WebConfig{
 			DistDir: filepath.Join(root, "web", "dist"),

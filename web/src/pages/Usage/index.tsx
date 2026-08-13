@@ -300,6 +300,18 @@ const UsagePage: React.FC = () => {
       width: 160,
     },
     {
+      title: '强度',
+      dataIndex: 'reasoning_effort',
+      hideInSearch: true,
+      render: (_, record) =>
+        record.reasoning_effort ? (
+          <Tag color="purple">{record.reasoning_effort}</Tag>
+        ) : (
+          '-'
+        ),
+      width: 100,
+    },
+    {
       title: '总耗时',
       dataIndex: 'duration_ms',
       hideInSearch: true,
@@ -398,6 +410,18 @@ const UsagePage: React.FC = () => {
       hideInSearch: true,
       render: (_, record) => <Tag color="blue">{record.routed_model}</Tag>,
       width: 160,
+    },
+    {
+      title: '强度',
+      dataIndex: 'reasoning_effort',
+      hideInSearch: true,
+      render: (_, record) =>
+        record.reasoning_effort ? (
+          <Tag color="purple">{record.reasoning_effort}</Tag>
+        ) : (
+          '-'
+        ),
+      width: 100,
     },
     {
       title: '总耗时',

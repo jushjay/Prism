@@ -244,6 +244,7 @@ declare namespace Prism {
     upstream_account_id: string;
     requested_model: string;
     routed_model: string;
+    reasoning_effort?: string;
     upstream_request_id?: string;
     response_id?: string;
     input_tokens?: number;
@@ -418,6 +419,19 @@ declare namespace Prism {
     reasoningEffort?: string;
     applyGlobal: boolean;
     accountId?: string;
+  }
+
+  interface ModelReasoningDefault {
+    model_id: string;
+    display_name: string;
+    default_reasoning_effort: string;
+    supported_reasoning_efforts: ReasoningEffort[];
+    configured: boolean;
+  }
+
+  interface ModelReasoningDefaultPayload {
+    modelId: string;
+    reasoningEffort?: string;
   }
 
   interface IPRule {

@@ -219,6 +219,24 @@ export async function listCustomAccountModels(params?: {
   });
 }
 
+export async function listModelReasoningDefaults() {
+  return request<Prism.ModelReasoningDefault[]>(
+    '/admin/models/reasoning-defaults',
+  );
+}
+
+export async function upsertModelReasoningDefault(
+  data: Prism.ModelReasoningDefaultPayload,
+) {
+  return request<
+    Prism.SuccessResponse & { model: Prism.ModelReasoningDefault }
+  >('/admin/models/reasoning-defaults', {
+    method: 'POST',
+    headers: jsonHeaders,
+    data,
+  });
+}
+
 export async function refreshAccountModels(accountId: string) {
   return request<Prism.AccountModelCatalog>(
     `/admin/models/accounts/${accountId}/refresh`,

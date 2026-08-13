@@ -4,8 +4,10 @@ import {
   listAccounts,
   listCustomAccountModels,
   listModelMappings,
+  listModelReasoningDefaults,
   refreshAccountModels,
   upsertModelMapping,
+  upsertModelReasoningDefault,
 } from '@/services/api';
 import {
   displayAccount,
@@ -45,9 +47,13 @@ import React, { useMemo, useRef, useState } from 'react';
 const ModelsPage: React.FC = () => {
   const catalogActionRef = useRef<ActionType>();
   const mappingActionRef = useRef<ActionType>();
+  const reasoningDefaultActionRef = useRef<ActionType>();
   const [activeTab, setActiveTab] = useState('catalog');
   const [mappingOpen, setMappingOpen] = useState(false);
   const [editingMapping, setEditingMapping] = useState<Prism.ModelMapping>();
+  const [reasoningDefaultOpen, setReasoningDefaultOpen] = useState(false);
+  const [editingReasoningDefault, setEditingReasoningDefault] =
+    useState<Prism.ModelReasoningDefault>();
   const [selectedAccountId, setSelectedAccountId] = useState<string>();
   const [modelDetail, setModelDetail] =
     useState<Prism.CustomAccountModelRecord>();
@@ -236,6 +242,69 @@ const ModelsPage: React.FC = () => {
     },
   ];
 
+  const reasoningDefaultColumns: ProColumns<Prism.ModelReasoningDefault>[] = [
+    {
+      title: '模型',
+      dataIndex: 'model_id',
+      width: 280,
+      fieldProps: {
+        placeholder: '模型 ID / 展示名',
+      },
+      render: (_, record) => (
+        <Space direction="vertical" size={2}>
+          <Typography.Text strong>{record.model_id}</Typography.Text>
+          <Typography.Text type="secondary">
+            {record.display_name || record.model_id}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '默认思考强度',
+      dataIndex: 'default_reasoning_effort',
+      width: 200,
+      render: (_, record) =>
+        record.default_reasoning_effort ? (
+          <Space size={6} wrap>
+            <Tag color="purple">{record.default_reasoning_effort}</Tag>
+            {record.configured ? <Tag color="blue">页面配置</Tag> : null}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">未设置</Typography.Text>
+        ),
+    },
+    {
+      title: '支持的思考强度',
+      dataIndex: 'supported_reasoning_efforts',
+      render: (_, record) =>
+        record.supported_reasoning_efforts.length ? (
+          <Space size={[4, 4]} wrap>
+            {record.supported_reasoning_efforts.map((item) => (
+              <Tag key={item.reasoningEffort}>{item.reasoningEffort}</Tag>
+            ))}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">未提供</Typography.Text>
+        ),
+    },
+    {
+      title: '操作',
+      valueType: 'option',
+      width: 120,
+      render: (_, record) => (
+        <Button
+          size="small"
+          title="配置默认思考强度"
+          icon={<EditOutlined />}
+          onClick={() => {
+            setEditingReasoningDefault(record);
+            setReasoningDefaultOpen(true);
+          }}
+        />
+      ),
+    },
+  ];
+
   const loadAccountModels = async (accountId: string) => {
     await refreshAccountModels(accountId);
     message.success('账号模型已同步');
@@ -352,6 +421,55 @@ const ModelsPage: React.FC = () => {
               />
             ),
           },
+          {
+            key: 'reasoning-default',
+            label: '默认思考强度',
+            children: (
+              <ProTable<Prism.ModelReasoningDefault>
+                actionRef={reasoningDefaultActionRef}
+                rowKey="model_id"
+                headerTitle="默认思考强度"
+                columns={reasoningDefaultColumns}
+                search={{
+                  labelWidth: 96,
+                  defaultCollapsed: false,
+                }}
+                toolBarRender={() => [
+                  <Button
+                    key="reasoning-default"
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => {
+                      setEditingReasoningDefault(undefined);
+                      setReasoningDefaultOpen(true);
+                    }}
+                  >
+                    新增配置
+                  </Button>,
+                ]}
+                request={async (params) => {
+                  const data = await listModelReasoningDefaults();
+                  const keyword =
+                    typeof params.model_id === 'string'
+                      ? params.model_id.trim().toLowerCase()
+                      : '';
+                  const filtered = keyword
+                    ? data.filter((item) =>
+                        [item.model_id, item.display_name].some((value) =>
+                          value.toLowerCase().includes(keyword),
+                        ),
+                      )
+                    : data;
+                  return {
+                    data: filtered,
+                    success: true,
+                    total: filtered.length,
+                  };
+                }}
+                pagination={{ pageSize: 10 }}
+              />
+            ),
+          },
         ]}
       />
 
@@ -409,8 +527,9 @@ const ModelsPage: React.FC = () => {
             { label: 'medium', value: 'medium' },
             { label: 'high', value: 'high' },
             { label: 'xhigh', value: 'xhigh' },
+            { label: 'max', value: 'max' },
           ]}
-          extra="可选。为空时沿用请求显式传参或系统默认值。"
+          extra="可选。为空时沿用请求显式传参、模型映射、目标模型默认值或系统默认值。"
         />
         <ProFormSwitch name="applyGlobal" label="全局生效" />
         <ProFormDependency name={['applyGlobal']}>
@@ -426,6 +545,65 @@ const ModelsPage: React.FC = () => {
             )
           }
         </ProFormDependency>
+      </ModalForm>
+
+      <ModalForm
+        title={
+          editingReasoningDefault ? '编辑默认思考强度' : '新增默认思考强度'
+        }
+        open={reasoningDefaultOpen}
+        modalProps={{
+          destroyOnClose: true,
+          onCancel: () => {
+            setReasoningDefaultOpen(false);
+            setEditingReasoningDefault(undefined);
+          },
+        }}
+        initialValues={
+          editingReasoningDefault
+            ? {
+                modelId: editingReasoningDefault.model_id,
+                reasoningEffort: editingReasoningDefault.configured
+                  ? editingReasoningDefault.default_reasoning_effort
+                  : undefined,
+              }
+            : undefined
+        }
+        onFinish={async (values) => {
+          await upsertModelReasoningDefault({
+            modelId: editingReasoningDefault?.model_id || values.modelId,
+            reasoningEffort: values.reasoningEffort,
+          });
+          message.success(
+            values.reasoningEffort
+              ? '默认思考强度已保存'
+              : '已恢复模型目录默认值',
+          );
+          setReasoningDefaultOpen(false);
+          setEditingReasoningDefault(undefined);
+          reasoningDefaultActionRef.current?.reload();
+          return true;
+        }}
+      >
+        <ProFormText
+          name="modelId"
+          label="模型 ID"
+          disabled={!!editingReasoningDefault}
+          rules={[{ required: true, message: '请输入模型 ID' }]}
+        />
+        <ProFormSelect
+          name="reasoningEffort"
+          label="默认思考强度"
+          allowClear
+          options={[
+            { label: 'low', value: 'low' },
+            { label: 'medium', value: 'medium' },
+            { label: 'high', value: 'high' },
+            { label: 'xhigh', value: 'xhigh' },
+            { label: 'max', value: 'max' },
+          ]}
+          extra="清空后恢复模型目录或上游返回的默认值。"
+        />
       </ModalForm>
 
       <Drawer

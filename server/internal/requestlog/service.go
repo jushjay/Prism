@@ -37,8 +37,9 @@ type Record struct {
 	UpstreamAccountID  string
 	AccountSnapshot    *auth.UsageAccountSnapshot
 
-	RequestedModel string
-	RoutedModel    string
+	RequestedModel  string
+	RoutedModel     string
+	ReasoningEffort string
 
 	UpstreamRequestID string
 	ResponseID        string
@@ -97,6 +98,7 @@ type EventItem struct {
 	UpstreamAccountID  string    `json:"upstream_account_id"`
 	RequestedModel     string    `json:"requested_model"`
 	RoutedModel        string    `json:"routed_model"`
+	ReasoningEffort    string    `json:"reasoning_effort"`
 	UpstreamRequestID  string    `json:"upstream_request_id"`
 	ResponseID         string    `json:"response_id"`
 	InputTokens        *int      `json:"input_tokens"`
@@ -151,13 +153,14 @@ func (s *Service) Record(record Record) error {
 			account_snapshot,
 			requested_model,
 			routed_model,
+			reasoning_effort,
 			upstream_request_id,
 			response_id,
 			input_tokens,
 			output_tokens,
 			cached_tokens,
 			reasoning_tokens
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		record.StartedAt.UTC().Format(time.RFC3339Nano),
 		record.CompletedAt.UTC().Format(time.RFC3339Nano),
@@ -181,6 +184,7 @@ func (s *Service) Record(record Record) error {
 		snapshotJSON(record.AccountSnapshot),
 		record.RequestedModel,
 		record.RoutedModel,
+		record.ReasoningEffort,
 		record.UpstreamRequestID,
 		record.ResponseID,
 		record.InputTokens,
@@ -294,6 +298,7 @@ func (s *Service) Events(query EventQuery) (EventListResult, error) {
 			upstream_account_id,
 			requested_model,
 			routed_model,
+			COALESCE(reasoning_effort, ''),
 			upstream_request_id,
 			response_id,
 			input_tokens,
@@ -345,6 +350,7 @@ func (s *Service) Events(query EventQuery) (EventListResult, error) {
 			&item.UpstreamAccountID,
 			&item.RequestedModel,
 			&item.RoutedModel,
+			&item.ReasoningEffort,
 			&item.UpstreamRequestID,
 			&item.ResponseID,
 			&inputTokens,
@@ -389,6 +395,7 @@ func normalizeRecord(record Record) Record {
 	record.UpstreamAccountID = strings.TrimSpace(record.UpstreamAccountID)
 	record.RequestedModel = strings.TrimSpace(record.RequestedModel)
 	record.RoutedModel = strings.TrimSpace(record.RoutedModel)
+	record.ReasoningEffort = strings.TrimSpace(record.ReasoningEffort)
 	record.UpstreamRequestID = strings.TrimSpace(record.UpstreamRequestID)
 	record.ResponseID = strings.TrimSpace(record.ResponseID)
 	record.ErrorMessage = truncateString(strings.TrimSpace(record.ErrorMessage), maxErrorMessageLength)
