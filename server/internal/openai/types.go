@@ -1,14 +1,15 @@
 package openai
 
 type ChatCompletionRequest struct {
-	Model           string          `json:"model"`
-	Messages        []ChatMessage   `json:"messages"`
-	Stream          bool            `json:"stream"`
-	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-	ServiceTier     string          `json:"service_tier,omitempty"`
-	Tools           []Tool          `json:"tools,omitempty"`
-	ToolChoice      any             `json:"tool_choice,omitempty"`
-	ResponseFormat  *ResponseFormat `json:"response_format,omitempty"`
+	Model              string          `json:"model"`
+	Messages           []ChatMessage   `json:"messages"`
+	Stream             bool            `json:"stream"`
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	ReasoningEffort    string          `json:"reasoning_effort,omitempty"`
+	ServiceTier        string          `json:"service_tier,omitempty"`
+	Tools              []Tool          `json:"tools,omitempty"`
+	ToolChoice         any             `json:"tool_choice,omitempty"`
+	ResponseFormat     *ResponseFormat `json:"response_format,omitempty"`
 }
 
 type ChatMessage struct {

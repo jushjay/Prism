@@ -91,7 +91,8 @@ type accountResponse struct {
 }
 
 const maxEmptyResponseRetries = 1
-const downstreamHeartbeatInterval = 10 * time.Second
+
+var downstreamHeartbeatInterval = 10 * time.Second
 
 const (
 	contextKeyClientIP       = "request.client_ip"
@@ -176,6 +177,12 @@ func NewServer() (*Server, error) {
 		_ = stateStore.Close()
 		return nil, err
 	}
+	affinityStore, err := affinity.NewPersistentStore(stateStore.DB())
+	if err != nil {
+		_ = stateStore.Close()
+		_ = audit.Close()
+		return nil, err
+	}
 
 	s := &Server{
 		cfg:        cfg,
@@ -191,7 +198,7 @@ func NewServer() (*Server, error) {
 		usage:      usageService,
 		requestLog: requestLogService,
 		version:    versionManager,
-		affinity:   affinity.NewStore(),
+		affinity:   affinityStore,
 		audit:      audit,
 	}
 	s.engine.Use(gin.Recovery())
@@ -820,8 +827,14 @@ func (s *Server) handleResponses(c *gin.Context) {
 	}
 	hasExplicitReasoning := request.Reasoning != nil && strings.TrimSpace(request.Reasoning.Effort) != ""
 	preferredAccountID := ""
-	if request.PreviousResponseID != "" {
+	strictAffinity := strings.TrimSpace(request.PreviousResponseID) != ""
+	if strictAffinity {
+		request.PreviousResponseID = strings.TrimSpace(request.PreviousResponseID)
 		preferredAccountID = s.affinity.AccountForResponse(request.PreviousResponseID)
+		if preferredAccountID == "" {
+			writeProxyError(c, http.StatusServiceUnavailable, "No account binding found for previous_response_id", false)
+			return
+		}
 		if request.TurnState == "" {
 			request.TurnState = s.affinity.TurnStateForResponse(request.PreviousResponseID)
 		}
@@ -834,13 +847,15 @@ func (s *Server) handleResponses(c *gin.Context) {
 			request.PromptCacheKey = codex.StableConversationKey(request)
 		}
 	}
-	strictAffinity := request.PreviousResponseID != "" && preferredAccountID != ""
 	excludedAccountIDs := []string{}
 	var lastDecision *proxyErrorDecision
 	requestedModel := strings.TrimSpace(request.Model)
 	modelFiltered := false
 
 	for attempt := 0; ; attempt++ {
+		if c.Request.Context().Err() != nil {
+			return
+		}
 		lease, ok := s.accounts.Acquire(auth.AcquireOptions{
 			PreferredID:     preferredAccountID,
 			StrictPreferred: strictAffinity,
@@ -901,6 +916,9 @@ func (s *Server) handleResponses(c *gin.Context) {
 				return
 			}
 			attemptMetrics.usage, attemptMetrics.responseID = parsePassthroughUsage(account.CustomEndpointType, resp.Header, rawResponseBody)
+			if attemptMetrics.responseID != "" {
+				s.affinity.Record(attemptMetrics.responseID, account.ID, request.PromptCacheKey, resp.Header.Get("x-codex-turn-state"), request.Instructions, attemptMetrics.usage.InputTokens, nil)
+			}
 			s.logToolTrace(c, account, "passthrough_response", requestedModel, requestedModel, "", "", summarizePassthroughToolTrace(account.CustomEndpointType, rawResponseBody))
 			if attemptMetrics.usage.InputTokens > 0 || attemptMetrics.usage.OutputTokens > 0 {
 				s.recordUsage(account.ID, requestedModel, attemptMetrics.usage)
@@ -945,9 +963,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 		attemptMetrics.upstreamRequestID = upstreamRequestIDFromResponse(resp)
 		if request.Stream {
 			upstreamTurnState := resp.Header.Get("x-codex-turn-state")
-			c.Status(http.StatusOK)
-			c.Header("Content-Type", "text/event-stream")
-			c.Header("Cache-Control", "no-cache, no-transform")
+			prepareSSEStreamResponse(c)
 			reader := bufio.NewReader(resp.Body)
 			stopReader := make(chan struct{})
 			defer close(stopReader)
@@ -1125,8 +1141,14 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	tupleSchema := chatRequest.TupleSchema
 	hasExplicitReasoning := chatRequest.HasExplicitReasoning
 	preferredAccountID := ""
-	if codexRequest.PreviousResponseID != "" {
+	strictAffinity := strings.TrimSpace(codexRequest.PreviousResponseID) != ""
+	if strictAffinity {
+		codexRequest.PreviousResponseID = strings.TrimSpace(codexRequest.PreviousResponseID)
 		preferredAccountID = s.affinity.AccountForResponse(codexRequest.PreviousResponseID)
+		if preferredAccountID == "" {
+			writeProxyError(c, http.StatusServiceUnavailable, "No account binding found for previous_response_id", false)
+			return
+		}
 		if codexRequest.TurnState == "" {
 			codexRequest.TurnState = s.affinity.TurnStateForResponse(codexRequest.PreviousResponseID)
 		}
@@ -1139,13 +1161,16 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 			codexRequest.PromptCacheKey = codex.StableConversationKey(codexRequest)
 		}
 	}
-	strictAffinity := codexRequest.PreviousResponseID != "" && preferredAccountID != ""
 	excludedAccountIDs := []string{}
 	var lastDecision *proxyErrorDecision
 	requestedModel := strings.TrimSpace(codexRequest.Model)
 	modelFiltered := false
+	streamResponseStarted := false
 
 	for attempt := 0; ; attempt++ {
+		if c.Request.Context().Err() != nil {
+			return
+		}
 		lease, ok := s.accounts.Acquire(auth.AcquireOptions{
 			PreferredID:     preferredAccountID,
 			StrictPreferred: strictAffinity,
@@ -1204,11 +1229,14 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 			rawResponseBody, err := proxyHTTPResponse(c, resp)
 			s.accounts.Release(account.ID)
 			if err != nil {
-				s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, requestedModel, "", strictAffinity, attempt, attemptMetrics, nil, 0, 0, 0, false, err.Error())
+				s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, requestedModel, codexRequest.PreviousResponseID, strictAffinity, attempt, attemptMetrics, nil, 0, 0, 0, false, err.Error())
 				s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, requestedModel, chatRequest.Stream, attempt, attemptMetrics, false, err.Error())
 				return
 			}
 			attemptMetrics.usage, attemptMetrics.responseID = parsePassthroughUsage(account.CustomEndpointType, resp.Header, rawResponseBody)
+			if attemptMetrics.responseID != "" {
+				s.affinity.Record(attemptMetrics.responseID, account.ID, codexRequest.PromptCacheKey, resp.Header.Get("x-codex-turn-state"), codexRequest.Instructions, attemptMetrics.usage.InputTokens, nil)
+			}
 			s.logToolTrace(c, account, "passthrough_response", requestedModel, requestedModel, "", "", summarizePassthroughToolTrace(account.CustomEndpointType, rawResponseBody))
 			if attemptMetrics.usage.InputTokens > 0 || attemptMetrics.usage.OutputTokens > 0 {
 				s.recordUsage(account.ID, requestedModel, attemptMetrics.usage)
@@ -1260,6 +1288,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 			streamUsage := codex.Usage{}
 			streamState := newChatStreamState(chatRequest.RequestedModel, tupleSchema)
 			toolTrace := newToolTraceAccumulator()
+			preReadyHeartbeatTicker := time.NewTicker(downstreamHeartbeatInterval)
 			processEvent := func(event codex.SSEEvent) ([]any, bool) {
 				toolTrace.observeResponsesEvent(event)
 				attemptMetrics.eventCount++
@@ -1323,11 +1352,18 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 					}
 					pendingChunks = append(pendingChunks, chunks)
 					streamReady = chatChunksCarryVisibleOutput(chunks) || attemptMetrics.responseCompleted
+				case <-preReadyHeartbeatTicker.C:
+					if !streamResponseStarted {
+						prepareSSEStreamResponse(c)
+						streamResponseStarted = true
+					}
+					writeSSECommentAndFlush(c.Writer, "keepalive")
 				case <-c.Request.Context().Done():
 					attemptMetrics.streamEnded = true
 					attemptMetrics.streamEndReason = "request_context:" + c.Request.Context().Err().Error()
 				}
 			}
+			preReadyHeartbeatTicker.Stop()
 
 			if !streamReady {
 				if cancelUpstream != nil {
@@ -1344,6 +1380,9 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 				s.logToolTrace(c, account, "chat_transformed_stream", requestedModel, upstreamCodexRequest.Model, attemptMetrics.streamEndReason, errMessage, toolTrace.summary())
 				s.logUpstreamAttemptDiagnostics(account, c.Request.URL.Path, requestedModel, upstreamCodexRequest.Model, upstreamCodexRequest.PreviousResponseID, strictAffinity, attempt, attemptMetrics, nil, 0, 0, 0, false, errMessage)
 				s.recordRequestAttempt(account, c.Request.URL.Path, requestedModel, upstreamCodexRequest.Model, chatRequest.Stream, attempt, attemptMetrics, false, errMessage)
+				if c.Request.Context().Err() != nil {
+					return
+				}
 				if !strictAffinity {
 					excludedAccountIDs = append(excludedAccountIDs, account.ID)
 					lastDecision = &proxyErrorDecision{Status: http.StatusBadGateway, Message: "Upstream stream failed before producing output"}
@@ -1353,9 +1392,10 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 				return
 			}
 
-			c.Status(http.StatusOK)
-			c.Header("Content-Type", "text/event-stream")
-			c.Header("Cache-Control", "no-cache, no-transform")
+			if !streamResponseStarted {
+				prepareSSEStreamResponse(c)
+				streamResponseStarted = true
+			}
 			initialChunk := streamState.initialRoleChunk()
 			toolTrace.observeChatChunk(initialChunk)
 			writeChatStreamChunk(wrapWriter{Writer: c.Writer}, initialChunk)
@@ -3788,12 +3828,26 @@ func writeChatStreamChunk(w io.Writer, chunk any) {
 	_, _ = io.WriteString(w, "data: "+string(raw)+"\n\n")
 }
 
+func prepareSSEStreamResponse(c *gin.Context) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache, no-transform")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+}
+
 func writeSSEComment(w io.Writer, comment string) {
 	comment = strings.TrimSpace(comment)
 	if comment == "" {
 		comment = "keepalive"
 	}
 	_, _ = io.WriteString(w, ": "+comment+"\n\n")
+}
+
+func writeSSECommentAndFlush(w io.Writer, comment string) {
+	writeSSEComment(w, comment)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func collectReasoningText(events []codex.SSEEvent) string {

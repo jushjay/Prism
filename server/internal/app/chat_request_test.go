@@ -64,6 +64,25 @@ func TestParseChatCompletionRequestDoesNotNormalizeNonCursorTools(t *testing.T) 
 	}
 }
 
+func TestParseChatProxyRequestPreservesPreviousResponseIDForChatPayload(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"messages": [{"role":"user","content":"continue"}],
+		"previous_response_id": "resp_previous",
+		"stream": false
+	}`)
+
+	proxyRequest, err := parseChatProxyRequest(config.Config{
+		Model: config.ModelConfig{DefaultModel: "gpt-5.4"},
+	}, body, "Cursor/1.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := proxyRequest.CodexRequest.PreviousResponseID; got != "resp_previous" {
+		t.Fatalf("expected previous_response_id to be preserved, got %q", got)
+	}
+}
+
 func TestParseChatProxyRequestSupportsResponsesCompatTools(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-5.4",

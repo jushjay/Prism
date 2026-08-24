@@ -1099,8 +1099,19 @@ func TestHandleChatCompletionsPreservesPreviousResponseIDForCustomResponses(t *t
 	if err != nil {
 		t.Fatalf("AddCustomAccount() error = %v", err)
 	}
+	secondAccount, err := pool.AddCustomAccount(auth.CustomAccountInput{
+		Label:              "deepseek-second",
+		CustomBaseURL:      "https://example.invalid",
+		CustomAPIKey:       "deepseek-key-second",
+		CustomEndpointType: "responses",
+		Enabled:            true,
+	})
+	if err != nil {
+		t.Fatalf("Add second custom account: %v", err)
+	}
 
 	var upstreamPreviousResponseIDs []string
+	var upstreamAPIKeys []string
 	customUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
@@ -1113,6 +1124,7 @@ func TestHandleChatCompletionsPreservesPreviousResponseIDForCustomResponses(t *t
 				t.Fatalf("decode custom request: %v", err)
 			}
 			upstreamPreviousResponseIDs = append(upstreamPreviousResponseIDs, payload.PreviousResponseID)
+			upstreamAPIKeys = append(upstreamAPIKeys, r.Header.Get("Authorization"))
 			w.Header().Set("Content-Type", "text/event-stream")
 			responseID := "resp_first"
 			text := "first"
@@ -1132,6 +1144,10 @@ func TestHandleChatCompletionsPreservesPreviousResponseIDForCustomResponses(t *t
 	customAccount.CustomBaseURL = customUpstream.URL
 	if err := pool.ReplaceAccount(customAccount); err != nil {
 		t.Fatalf("ReplaceAccount() error = %v", err)
+	}
+	secondAccount.CustomBaseURL = customUpstream.URL
+	if err := pool.ReplaceAccount(secondAccount); err != nil {
+		t.Fatalf("ReplaceAccount() second account error = %v", err)
 	}
 
 	now := time.Now().UTC()
@@ -1249,6 +1265,41 @@ func TestHandleChatCompletionsPreservesPreviousResponseIDForCustomResponses(t *t
 	}
 	if upstreamPreviousResponseIDs[1] != "resp_first" {
 		t.Fatalf("expected second upstream request to preserve previous_response_id, got %q", upstreamPreviousResponseIDs[1])
+	}
+	if len(upstreamAPIKeys) != 2 || upstreamAPIKeys[0] != "Bearer deepseek-key" || upstreamAPIKeys[1] != upstreamAPIKeys[0] {
+		t.Fatalf("expected continuation to reuse first account, got upstream auth headers %#v", upstreamAPIKeys)
+	}
+}
+
+func TestHandleResponsesRejectsUnknownPreviousResponseIDWithoutRoundRobin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	server := &Server{
+		cfg: config.Config{
+			Server: config.ServerConfig{ProxyAPIKey: "proxy-key"},
+		},
+		engine:   gin.New(),
+		affinity: affinity.NewStore(),
+	}
+	server.engine.Use(gin.Recovery())
+	server.engine.POST("/v1/responses", server.requireAPIKey(), server.handleResponses)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"input":[{"role":"user","content":"continue"}],
+		"previous_response_id":"resp_unknown",
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer proxy-key")
+	server.engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503 for unknown previous_response_id, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "No account binding found") {
+		t.Fatalf("expected account binding error, got %s", recorder.Body.String())
 	}
 }
 

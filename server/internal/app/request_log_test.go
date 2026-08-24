@@ -1,12 +1,15 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -613,6 +616,94 @@ func TestHandleChatCompletionsStreamCanceledIsRecordedAsFailure(t *testing.T) {
 	}
 	if !strings.Contains(logs, `error="read_error:`) {
 		t.Fatalf("expected diagnostics error field, got %q", logs)
+	}
+}
+
+func TestHandleChatCompletionsSendsPreReadyKeepaliveAndStopsAfterContextCancellation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousHeartbeatInterval := downstreamHeartbeatInterval
+	downstreamHeartbeatInterval = 5 * time.Millisecond
+	t.Cleanup(func() {
+		downstreamHeartbeatInterval = previousHeartbeatInterval
+	})
+
+	var upstreamCalls atomic.Int32
+	upstreamDone := make(chan struct{}, 2)
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		upstreamCalls.Add(1)
+		defer func() { upstreamDone <- struct{}{} }()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"response":{"id":"resp_keepalive"}}` + "\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}
+
+	server, sqliteStore := newTwoAccountRequestLogTestServer(t, []http.HandlerFunc{handler, handler})
+	defer sqliteStore.Close()
+	server.engine.POST("/v1/chat/completions", server.requireAPIKey(), server.handleChatCompletions)
+
+	httpServer := httptest.NewServer(server.engine)
+	defer httpServer.Close()
+
+	requestContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestContext, http.MethodPost, httpServer.URL+"/v1/chat/completions", strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"wait"}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer proxy-key")
+	request.Header.Set("User-Agent", "Cursor/1.0")
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", response.StatusCode)
+	}
+
+	line, err := bufio.NewReader(response.Body).ReadString('\n')
+	if err != nil {
+		t.Fatalf("ReadString() error = %v", err)
+	}
+	if strings.TrimSpace(line) != ": keepalive" {
+		t.Fatalf("expected pre-ready keepalive, got %q", line)
+	}
+
+	cancel()
+	_ = response.Body.Close()
+	select {
+	case <-upstreamDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for upstream request to stop")
+	}
+
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("expected no retry after context cancellation, got %d upstream calls", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		var attemptCount int
+		if err := sqliteStore.DB().QueryRow(`SELECT COUNT(1) FROM request_events`).Scan(&attemptCount); err != nil {
+			t.Fatalf("count request events: %v", err)
+		}
+		if attemptCount == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected one recorded attempt, got %d", attemptCount)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

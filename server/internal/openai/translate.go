@@ -68,12 +68,13 @@ func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
 		instructions = "You are running behind the Prism compatibility layer.\n\n" + instructions
 	}
 	request := codex.ResponsesRequest{
-		Model:          resolveModel(cfg, req.Model),
-		Instructions:   instructions,
-		Input:          input,
-		Stream:         req.Stream,
-		Store:          false,
-		PromptCacheKey: derivePromptCacheKey(req.Messages),
+		Model:              resolveModel(cfg, req.Model),
+		Instructions:       instructions,
+		Input:              input,
+		Stream:             req.Stream,
+		Store:              false,
+		PreviousResponseID: strings.TrimSpace(req.PreviousResponseID),
+		PromptCacheKey:     derivePromptCacheKey(req.Messages),
 	}
 	effort := req.ReasoningEffort
 	explicitReasoning := strings.TrimSpace(req.ReasoningEffort)
