@@ -611,6 +611,30 @@ func TestListCustomAccountModelsReturnsOpenAIAndCustomRows(t *testing.T) {
 	`, customAccount.ID, now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("insert custom sync state: %v", err)
 	}
+	if _, err := sqliteStore.DB().Exec(`
+		INSERT INTO openai_account_models (account_id, model_id, display_name, model_object, owned_by, created_unix, source_payload, fetched_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "deleted-openai-account", "gpt-stale", "Stale GPT", "model", "openai", now.Unix(), `{}`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert stale openai model: %v", err)
+	}
+	if _, err := sqliteStore.DB().Exec(`
+		INSERT INTO openai_account_model_sync_state (account_id, fetched_at, expires_at, last_error, updated_at)
+		VALUES (?, ?, ?, '', ?)
+	`, "deleted-openai-account", now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert stale openai sync state: %v", err)
+	}
+	if _, err := sqliteStore.DB().Exec(`
+		INSERT INTO custom_account_models (account_id, model_id, display_name, model_object, owned_by, created_unix, source_payload, fetched_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "deleted-custom-account", "glm-stale", "Stale GLM", "model", "z-ai", now.Unix(), `{}`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert stale custom model: %v", err)
+	}
+	if _, err := sqliteStore.DB().Exec(`
+		INSERT INTO custom_account_model_sync_state (account_id, fetched_at, expires_at, last_error, updated_at)
+		VALUES (?, ?, ?, '', ?)
+	`, "deleted-custom-account", now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert stale custom sync state: %v", err)
+	}
 
 	svc, err := NewService(
 		config.Config{
@@ -648,6 +672,31 @@ func TestListCustomAccountModelsReturnsOpenAIAndCustomRows(t *testing.T) {
 	}
 	if len(rows) != 2 {
 		t.Fatalf("expected two rows, got %d", len(rows))
+	}
+	var count int
+	if err := sqliteStore.DB().QueryRow(`SELECT COUNT(1) FROM openai_account_models WHERE account_id = ?`, "deleted-openai-account").Scan(&count); err != nil {
+		t.Fatalf("count stale openai models: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected stale openai models to be removed, got %d", count)
+	}
+	if err := sqliteStore.DB().QueryRow(`SELECT COUNT(1) FROM openai_account_model_sync_state WHERE account_id = ?`, "deleted-openai-account").Scan(&count); err != nil {
+		t.Fatalf("count stale openai sync state: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected stale openai sync state to be removed, got %d", count)
+	}
+	if err := sqliteStore.DB().QueryRow(`SELECT COUNT(1) FROM custom_account_models WHERE account_id = ?`, "deleted-custom-account").Scan(&count); err != nil {
+		t.Fatalf("count stale custom models: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected stale custom models to be removed, got %d", count)
+	}
+	if err := sqliteStore.DB().QueryRow(`SELECT COUNT(1) FROM custom_account_model_sync_state WHERE account_id = ?`, "deleted-custom-account").Scan(&count); err != nil {
+		t.Fatalf("count stale custom sync state: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected stale custom sync state to be removed, got %d", count)
 	}
 }
 

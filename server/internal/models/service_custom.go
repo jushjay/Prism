@@ -125,6 +125,10 @@ func (s *Service) getCustomAccountCatalog(ctx context.Context, account auth.Acco
 }
 
 func (s *Service) refreshStaleAccountModels(ctx context.Context) {
+	_ = s.cleanupInvalidAccountModels()
+	if s.accounts == nil {
+		return
+	}
 	now := time.Now().UTC()
 	for _, account := range s.accounts.List() {
 		if account.DisabledByUser {
@@ -148,6 +152,59 @@ func (s *Service) refreshStaleAccountModels(ctx context.Context) {
 		}
 		cancel()
 	}
+}
+
+func (s *Service) cleanupInvalidAccountModels() error {
+	if s == nil || s.db == nil || s.accounts == nil {
+		return nil
+	}
+
+	validAccountIDs := map[auth.AccountProvider]map[string]struct{}{
+		auth.ProviderOpenAI: {},
+		auth.ProviderCustom: {},
+	}
+	for _, account := range s.accounts.List() {
+		accountID := strings.TrimSpace(account.ID)
+		if accountID == "" {
+			continue
+		}
+		provider := account.Provider
+		if provider != auth.ProviderCustom {
+			provider = auth.ProviderOpenAI
+		}
+		validAccountIDs[provider][accountID] = struct{}{}
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, provider := range []auth.AccountProvider{auth.ProviderOpenAI, auth.ProviderCustom} {
+		if err := deleteInvalidAccountModelRows(tx, accountModelTable(provider), validAccountIDs[provider]); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := deleteInvalidAccountModelRows(tx, accountModelSyncStateTable(provider), validAccountIDs[provider]); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func deleteInvalidAccountModelRows(tx *sql.Tx, table string, validAccountIDs map[string]struct{}) error {
+	if len(validAccountIDs) == 0 {
+		_, err := tx.Exec(`DELETE FROM ` + table)
+		return err
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(validAccountIDs)), ",")
+	args := make([]any, 0, len(validAccountIDs))
+	for accountID := range validAccountIDs {
+		args = append(args, accountID)
+	}
+	_, err := tx.Exec(`DELETE FROM `+table+` WHERE account_id NOT IN (`+placeholders+`)`, args...)
+	return err
 }
 
 func supportsPersistedAccountModels(account auth.Account) bool {
@@ -407,6 +464,9 @@ func (s *Service) listAllDynamicModelInfo() []Info {
 func (s *Service) ListCustomAccountModels(accountID, modelQuery string) ([]CustomAccountModelRecord, error) {
 	if s.db == nil {
 		return nil, sql.ErrConnDone
+	}
+	if err := s.cleanupInvalidAccountModels(); err != nil {
+		return nil, err
 	}
 	filters := []string{"1 = 1"}
 	args := make([]any, 0, 2)

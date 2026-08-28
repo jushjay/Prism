@@ -227,6 +227,11 @@ func (s *Service) GetAccountCatalog(ctx context.Context, accountID string, force
 	if !ok {
 		return AccountCatalogView{}, errors.New("account not found")
 	}
+	if forceRefresh {
+		if err := s.cleanupInvalidAccountModels(); err != nil {
+			return AccountCatalogView{}, err
+		}
+	}
 	clientVersion := ""
 	if s.version != nil {
 		clientVersion = s.version.CurrentVersion()
