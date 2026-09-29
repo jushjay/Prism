@@ -79,7 +79,6 @@ func newTestSidecar(t *testing.T, handler http.HandlerFunc, fileCfg reasoning.Fi
 	}
 	cfg := config.Config{
 		Upstream: config.UpstreamConfig{BaseURL: upstream.URL, PreserveHost: true},
-		Model:    config.ModelConfig{DefaultModel: "gpt-5.4", DefaultReasoningEffort: "medium"},
 	}
 	s, err := newServer(cfg, resolver, nil)
 	if err != nil {
@@ -216,9 +215,9 @@ func TestCursorNonRewritePathsAreProxied(t *testing.T) {
 	}
 }
 
-func TestCursorChatInjectsDefaultReasoningAndConvertsStream(t *testing.T) {
+func TestCursorChatInjectsModelReasoningAndConvertsStream(t *testing.T) {
 	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{
-		ReasoningDefaults: map[string]string{"gpt-5.4": "high"},
+		Models: map[string]reasoning.Model{"gpt-5.4": {ReasoningEffort: "high"}},
 	})
 
 	resp := postJSON(t, sidecar.URL+"/v1/chat/completions", cursorUA, `{"model":"gpt-5.4","stream":true,"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}]}`)
@@ -239,7 +238,7 @@ func TestCursorChatInjectsDefaultReasoningAndConvertsStream(t *testing.T) {
 	}
 	payload := sub2api.lastJSON(t)
 	if effort := reasoningEffortOf(t, payload); effort != "high" {
-		t.Fatalf("expected per-model default effort high, got %q", effort)
+		t.Fatalf("expected configured model effort high, got %q", effort)
 	}
 	if payload["stream"] != true || payload["store"] != false || payload["instructions"] != "be brief" {
 		t.Fatalf("unexpected upstream payload %#v", payload)
@@ -292,20 +291,46 @@ func TestCursorChatInjectsDefaultReasoningAndConvertsStream(t *testing.T) {
 	}
 }
 
-func TestCursorChatFallsBackToGlobalDefaultReasoning(t *testing.T) {
-	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{})
+func TestCursorChatUnlistedModelHasNoInjectedReasoning(t *testing.T) {
+	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{
+		Models: map[string]reasoning.Model{"gpt-5.4": {ReasoningEffort: "high"}},
+	})
 
 	resp := postJSON(t, sidecar.URL+"/v1/chat/completions", cursorUA, `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}`)
 	readBody(t, resp)
-	if effort := reasoningEffortOf(t, sub2api.lastJSON(t)); effort != "medium" {
-		t.Fatalf("expected global default effort medium, got %q", effort)
+	payload := sub2api.lastJSON(t)
+	if payload["model"] != "gpt-5.5" {
+		t.Fatalf("unlisted model should pass through, got %v", payload["model"])
+	}
+	if _, ok := payload["reasoning"]; ok {
+		t.Fatalf("unlisted model should not get a reasoning effort, got %#v", payload["reasoning"])
+	}
+}
+
+func TestCursorRequestWithoutModelIsRejected(t *testing.T) {
+	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{})
+
+	for _, target := range []struct{ path, body string }{
+		{"/v1/chat/completions", `{"messages":[{"role":"user","content":"hi"}]}`},
+		{"/v1/responses", `{"input":[{"role":"user","content":"hi"}]}`},
+	} {
+		resp := postJSON(t, sidecar.URL+target.path, cursorUA, target.body)
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, errModelRequired) {
+			t.Fatalf("%s: expected 400 %q, got %d %s", target.path, errModelRequired, resp.StatusCode, body)
+		}
+	}
+	if len(sub2api.requests) != 0 {
+		t.Fatalf("requests without model must not reach sub2api")
 	}
 }
 
 func TestCursorChatKeepsExplicitReasoningEffort(t *testing.T) {
 	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{
-		Models:            []reasoning.ModelMapping{{Name: "gpt-5.4-high", Target: "gpt-5.4", ReasoningEffort: "high"}},
-		ReasoningDefaults: map[string]string{"gpt-5.4": "xhigh"},
+		Models: map[string]reasoning.Model{
+			"gpt-5.4-high": {Target: "gpt-5.4", ReasoningEffort: "high"},
+			"gpt-5.4":      {ReasoningEffort: "xhigh"},
+		},
 	})
 
 	for _, body := range []string{
@@ -320,10 +345,12 @@ func TestCursorChatKeepsExplicitReasoningEffort(t *testing.T) {
 	}
 }
 
-func TestCursorChatAppliesModelMappingEffort(t *testing.T) {
+func TestCursorChatAppliesVirtualModelEffort(t *testing.T) {
 	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{
-		Models:            []reasoning.ModelMapping{{Name: "gpt-5.4-xhigh", Target: "gpt-5.4", ReasoningEffort: "xhigh"}},
-		ReasoningDefaults: map[string]string{"gpt-5.4": "low"},
+		Models: map[string]reasoning.Model{
+			"gpt-5.4-xhigh": {Target: "gpt-5.4", ReasoningEffort: "xhigh"},
+			"gpt-5.4":       {ReasoningEffort: "low"},
+		},
 	})
 
 	resp := postJSON(t, sidecar.URL+"/v1/chat/completions", cursorUA, `{"model":"gpt-5.4-xhigh","messages":[{"role":"user","content":"hi"}]}`)
@@ -374,7 +401,7 @@ func TestCursorResponsesShapedBodyOnChatPathIsConverted(t *testing.T) {
 			[2]string{"response.function_call_arguments.done", `{"item_id":"fc_1","arguments":"{\"path\":\"a.go\"}"}`},
 			[2]string{"response.completed", `{"response":{"id":"resp_2","usage":{"input_tokens":3,"output_tokens":2}}}`},
 		)
-	}, reasoning.FileConfig{})
+	}, reasoning.FileConfig{Models: map[string]reasoning.Model{"gpt-5.4": {ReasoningEffort: "medium"}}})
 
 	body := `{"model":"gpt-5.4","stream":true,"instructions":"sys","input":[{"role":"user","content":[{"type":"input_text","text":"read a.go"}]},{"type":"function_call_output","call_id":"call_0","output":[{"type":"input_text","text":"ok"}]}],"tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}],"metadata":{"x":1}}`
 	resp := postJSON(t, sidecar.URL+"/v1/chat/completions", cursorUA, body)
@@ -395,7 +422,7 @@ func TestCursorResponsesShapedBodyOnChatPathIsConverted(t *testing.T) {
 		t.Fatalf("function_call_output should be flattened to text, got %#v", output)
 	}
 	if effort := reasoningEffortOf(t, payload); effort != "medium" {
-		t.Fatalf("expected default effort on compat body, got %q", effort)
+		t.Fatalf("expected model effort on compat body, got %q", effort)
 	}
 	for _, want := range []string{`"tool_calls"`, `"name":"read_file"`, `"finish_reason":"tool_calls"`, "data: [DONE]"} {
 		if !strings.Contains(stream, want) {
@@ -412,7 +439,7 @@ func TestCursorResponsesEndpointNonStream(t *testing.T) {
 			[2]string{"response.completed", `{"response":{"id":"resp_3","model":"gpt-5.4","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":4,"output_tokens":1}}}`},
 		)
 	}, reasoning.FileConfig{
-		Models: []reasoning.ModelMapping{{Name: "gpt-5.4-high", Target: "gpt-5.4", ReasoningEffort: "high"}},
+		Models: map[string]reasoning.Model{"gpt-5.4-high": {Target: "gpt-5.4", ReasoningEffort: "high"}},
 	})
 
 	resp := postJSON(t, sidecar.URL+"/v1/responses", cursorUA, `{"model":"gpt-5.4-high","input":[{"role":"user","content":"hi"}]}`)
@@ -488,14 +515,14 @@ func TestCursorChatStreamFailureBeforeOutputReturnsError(t *testing.T) {
 
 func TestSidecarHealth(t *testing.T) {
 	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{
-		Models: []reasoning.ModelMapping{{Name: "a", Target: "b"}},
+		Models: map[string]reasoning.Model{"a": {Target: "b", ReasoningEffort: "low"}},
 	})
 	resp, err := http.Get(sidecar.URL + healthPath)
 	if err != nil {
 		t.Fatalf("health: %v", err)
 	}
 	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"model_mappings":1`) {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"models":1`) {
 		t.Fatalf("unexpected health %d %s", resp.StatusCode, body)
 	}
 	if len(sub2api.requests) != 0 {

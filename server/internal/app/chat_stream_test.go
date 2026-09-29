@@ -29,44 +29,29 @@ func TestCollectReasoningText(t *testing.T) {
 	}
 }
 
-func TestApplyDefaultReasoningEffortUsesModelDefaultAndPreservesExplicitValue(t *testing.T) {
+func TestApplyModelReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name           string
-		mapping        reasoning.Resolution
+		resolution     reasoning.Resolution
 		hasExplicit    bool
 		initialEffort  string
-		globalEffort   string
 		expectedEffort string
 	}{
 		{
-			name: "mapping overrides model default",
-			mapping: reasoning.Resolution{
-				ReasoningEffort:        "high",
-				DefaultReasoningEffort: "max",
-			},
-			globalEffort:   "medium",
+			name:           "configured model effort is injected",
+			resolution:     reasoning.Resolution{ReasoningEffort: "high"},
 			expectedEffort: "high",
-		},
-		{
-			name: "model default overrides global default",
-			mapping: reasoning.Resolution{
-				DefaultReasoningEffort: "max",
-			},
-			globalEffort:   "medium",
-			expectedEffort: "max",
-		},
-		{
-			name:           "global default is fallback",
-			globalEffort:   "medium",
-			expectedEffort: "medium",
 		},
 		{
 			name:           "explicit request wins",
 			hasExplicit:    true,
 			initialEffort:  "low",
-			mapping:        reasoning.Resolution{DefaultReasoningEffort: "max"},
-			globalEffort:   "medium",
+			resolution:     reasoning.Resolution{ReasoningEffort: "high"},
 			expectedEffort: "low",
+		},
+		{
+			name:           "unlisted model gets no effort",
+			expectedEffort: "",
 		},
 	}
 
@@ -76,8 +61,12 @@ func TestApplyDefaultReasoningEffortUsesModelDefaultAndPreservesExplicitValue(t 
 			if test.initialEffort != "" {
 				request.Reasoning = &codex.Reasoning{Effort: test.initialEffort}
 			}
-			applyDefaultReasoningEffort(&request, test.mapping, test.hasExplicit, test.globalEffort)
-			if request.Reasoning == nil || request.Reasoning.Effort != test.expectedEffort {
+			applyModelReasoningEffort(&request, test.resolution, test.hasExplicit)
+			got := ""
+			if request.Reasoning != nil {
+				got = request.Reasoning.Effort
+			}
+			if got != test.expectedEffort {
 				t.Fatalf("reasoning = %+v, want %q", request.Reasoning, test.expectedEffort)
 			}
 		})

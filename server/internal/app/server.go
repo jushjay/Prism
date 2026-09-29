@@ -99,11 +99,11 @@ func isCursorRewriteRequest(r *http.Request) bool {
 
 func (s *Server) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"ok":             true,
-		"service":        "sub2api-cursor-sidecar",
-		"upstream":       s.cfg.Upstream.BaseURL,
-		"model_mappings": s.resolver.MappingCount(),
-		"time":           time.Now().UTC(),
+		"ok":       true,
+		"service":  "sub2api-cursor-sidecar",
+		"upstream": s.cfg.Upstream.BaseURL,
+		"models":   s.resolver.ModelCount(),
+		"time":     time.Now().UTC(),
 	})
 }
 
@@ -121,7 +121,7 @@ func (s *Server) Run() error {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(gin.DefaultWriter, "[sidecar] listening on %s, upstream=%s, model_mappings=%d\n", addr, s.cfg.Upstream.BaseURL, s.resolver.MappingCount())
+		fmt.Fprintf(gin.DefaultWriter, "[sidecar] listening on %s, upstream=%s, models=%d\n", addr, s.cfg.Upstream.BaseURL, s.resolver.ModelCount())
 		errCh <- srv.ListenAndServe()
 	}()
 

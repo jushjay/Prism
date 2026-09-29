@@ -19,9 +19,13 @@ func (s *Server) handleCursorChatCompletions(c *gin.Context) {
 		return
 	}
 	s.auditCursorRequest(c, body)
-	chatRequest, err := parseChatProxyRequest(s.cfg, body, c.Request.UserAgent())
+	chatRequest, err := parseChatProxyRequest(body, c.Request.UserAgent())
 	if err != nil {
 		writeProxyError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(chatRequest.CodexRequest.Model) == "" {
+		writeProxyError(c, http.StatusBadRequest, errModelRequired)
 		return
 	}
 	c.Set(contextKeyClientStream, chatRequest.Stream)

@@ -37,10 +37,11 @@ func (s *Server) handleCursorResponses(c *gin.Context) {
 			}
 		}
 	}
-	if strings.TrimSpace(request.Model) == "" {
-		request.Model = s.cfg.Model.DefaultModel
-	}
 	requestedModel := strings.TrimSpace(request.Model)
+	if requestedModel == "" {
+		writeProxyError(c, http.StatusBadRequest, errModelRequired)
+		return
+	}
 	clientStream := request.Stream
 	hasExplicitReasoning := request.Reasoning != nil && strings.TrimSpace(request.Reasoning.Effort) != ""
 	c.Set(contextKeyClientStream, clientStream)

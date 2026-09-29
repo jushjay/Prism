@@ -1,32 +1,28 @@
-# sub2api-cursor-sidecar configuration
+# sub2api-cursor-sidecar model configuration
 #
 # Only applies to requests coming from Cursor (User-Agent contains "Cursor/").
 # All other traffic is reverse-proxied to sub2api untouched.
 #
-# Reasoning effort precedence for a Cursor request:
-#   1. Explicit effort in the request (reasoning.effort / reasoning_effort)
-#   2. models[].reasoning_effort of the matched mapping
-#   3. reasoning_defaults[<target model>]
-#   4. DEFAULT_REASONING_EFFORT env (default: medium)
-
-# Virtual model names that can be added as custom models in Cursor.
-# Each one is rewritten to `target` and pinned to `reasoning_effort`.
+# Each key is the model name Cursor sends (add it as a custom model in Cursor).
+# Every model has exactly one reasoning effort:
+#   target            upstream model sent to sub2api (optional, defaults to the key)
+#   reasoning_effort  required: none | minimal | low | medium | high | xhigh
+#
+# An effort set explicitly in the request (reasoning.effort / reasoning_effort)
+# still wins. Models not listed here are forwarded without a reasoning effort.
 models:
-  - { name: gpt-5.5-low,    target: gpt-5.5, reasoning_effort: low }
-  - { name: gpt-5.5-high,   target: gpt-5.5, reasoning_effort: high }
-  - { name: gpt-5.5-xhigh,  target: gpt-5.5, reasoning_effort: xhigh }
-  - { name: gpt-5.4-low,    target: gpt-5.4, reasoning_effort: low }
-  - { name: gpt-5.4-high,   target: gpt-5.4, reasoning_effort: high }
-  - { name: gpt-5.4-xhigh,  target: gpt-5.4, reasoning_effort: xhigh }
-  - { name: gpt-5.3-codex-high,  target: gpt-5.3-codex, reasoning_effort: high }
-  - { name: gpt-5.3-codex-xhigh, target: gpt-5.3-codex, reasoning_effort: xhigh }
+  gpt-5.5:        { reasoning_effort: medium }
+  gpt-5.5-low:    { target: gpt-5.5, reasoning_effort: low }
+  gpt-5.5-high:   { target: gpt-5.5, reasoning_effort: high }
+  gpt-5.5-xhigh:  { target: gpt-5.5, reasoning_effort: xhigh }
 
-# Default effort per upstream model when neither the request nor a mapping sets one.
-reasoning_defaults:
-  gpt-5.5: medium
-  gpt-5.4: medium
-  gpt-5.4-mini: medium
-  gpt-5.3-codex: medium
+  gpt-5.4:        { reasoning_effort: medium }
+  gpt-5.4-low:    { target: gpt-5.4, reasoning_effort: low }
+  gpt-5.4-high:   { target: gpt-5.4, reasoning_effort: high }
+  gpt-5.4-xhigh:  { target: gpt-5.4, reasoning_effort: xhigh }
 
-# Plain model renames applied after mappings (no effort change).
-aliases: {}
+  gpt-5.4-mini:   { reasoning_effort: medium }
+
+  gpt-5.3-codex:        { reasoning_effort: medium }
+  gpt-5.3-codex-high:   { target: gpt-5.3-codex, reasoning_effort: high }
+  gpt-5.3-codex-xhigh:  { target: gpt-5.3-codex, reasoning_effort: xhigh }

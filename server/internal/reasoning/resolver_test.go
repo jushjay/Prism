@@ -6,41 +6,51 @@ import (
 	"testing"
 )
 
-func TestResolveAppliesMappingAliasAndDefaults(t *testing.T) {
-	resolver, err := New(FileConfig{
-		Models: []ModelMapping{
-			{Name: "gpt-5.4-high", Target: "gpt-5.4", ReasoningEffort: "HIGH"},
-			{Name: "fast", Target: "codex-alias"},
-		},
-		ReasoningDefaults: map[string]string{"gpt-5.4": "low", "gpt-5.3-codex": "medium"},
-		Aliases:           map[string]string{"codex-alias": "gpt-5.3-codex"},
-	})
+func TestResolveUsesPerModelEffort(t *testing.T) {
+	resolver, err := New(FileConfig{Models: map[string]Model{
+		"gpt-5.4":      {ReasoningEffort: "medium"},
+		"gpt-5.4-high": {Target: "gpt-5.4", ReasoningEffort: "HIGH"},
+	}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
 	got := resolver.Resolve("gpt-5.4-high")
-	if got.TargetModel != "gpt-5.4" || got.ReasoningEffort != "high" || got.DefaultReasoningEffort != "low" {
-		t.Fatalf("unexpected mapping resolution: %+v", got)
+	if got.TargetModel != "gpt-5.4" || got.ReasoningEffort != "high" {
+		t.Fatalf("unexpected virtual model resolution: %+v", got)
 	}
 
-	got = resolver.Resolve("fast")
-	if got.TargetModel != "gpt-5.3-codex" || got.ReasoningEffort != "" || got.DefaultReasoningEffort != "medium" {
-		t.Fatalf("unexpected alias resolution: %+v", got)
+	got = resolver.Resolve("gpt-5.4")
+	if got.TargetModel != "gpt-5.4" || got.ReasoningEffort != "medium" {
+		t.Fatalf("unexpected base model resolution: %+v", got)
 	}
 
 	got = resolver.Resolve("unknown-model")
-	if got.TargetModel != "unknown-model" || got.ReasoningEffort != "" || got.DefaultReasoningEffort != "" {
+	if got.TargetModel != "unknown-model" || got.ReasoningEffort != "" {
 		t.Fatalf("unexpected passthrough resolution: %+v", got)
 	}
 }
 
-func TestNewRejectsInvalidEffortAndDuplicates(t *testing.T) {
-	if _, err := New(FileConfig{Models: []ModelMapping{{Name: "a", ReasoningEffort: "ultra"}}}); err == nil {
+func TestNewRejectsInvalidOrMissingEffort(t *testing.T) {
+	if _, err := New(FileConfig{Models: map[string]Model{"a": {ReasoningEffort: "ultra"}}}); err == nil {
 		t.Fatal("expected invalid effort error")
 	}
-	if _, err := New(FileConfig{Models: []ModelMapping{{Name: "a"}, {Name: "a"}}}); err == nil {
-		t.Fatal("expected duplicate mapping error")
+	if _, err := New(FileConfig{Models: map[string]Model{"a": {Target: "b"}}}); err == nil {
+		t.Fatal("expected missing effort error")
+	}
+	if _, err := New(FileConfig{Models: map[string]Model{"a": {ReasoningEffort: "low"}, " a ": {ReasoningEffort: "high"}}}); err == nil {
+		t.Fatal("expected duplicate model error")
+	}
+}
+
+func TestLoadRejectsDuplicateYAMLKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sidecar.yaml")
+	content := "models:\n  gpt-5.4: { reasoning_effort: low }\n  gpt-5.4: { reasoning_effort: high }\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, true); err == nil {
+		t.Fatal("expected duplicate key error")
 	}
 }
 
@@ -50,7 +60,7 @@ func TestLoadMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("optional missing file should not fail: %v", err)
 	}
-	if resolver.MappingCount() != 0 {
+	if resolver.ModelCount() != 0 {
 		t.Fatalf("expected empty resolver")
 	}
 	if _, err := Load(missing, true); err == nil {
@@ -67,8 +77,12 @@ func TestLoadBundledConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load bundled config: %v", err)
 	}
-	got := resolver.Resolve("gpt-5.4-xhigh")
-	if got.TargetModel != "gpt-5.4" || got.ReasoningEffort != "xhigh" {
-		t.Fatalf("unexpected bundled resolution: %+v", got)
+	for model, want := range map[string]Resolution{
+		"gpt-5.4-xhigh": {TargetModel: "gpt-5.4", ReasoningEffort: "xhigh"},
+		"gpt-5.4":       {TargetModel: "gpt-5.4", ReasoningEffort: "medium"},
+	} {
+		if got := resolver.Resolve(model); got != want {
+			t.Fatalf("Resolve(%q) = %+v, want %+v", model, got, want)
+		}
 	}
 }

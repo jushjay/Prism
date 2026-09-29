@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/jushjay/prism/internal/codex"
-	"github.com/jushjay/prism/internal/config"
 	"github.com/jushjay/prism/internal/openai"
 	"github.com/jushjay/prism/internal/schema"
 )
@@ -19,8 +18,8 @@ type chatProxyRequest struct {
 	HasExplicitReasoning bool
 }
 
-func parseChatProxyRequest(cfg config.Config, body []byte, userAgent string) (chatProxyRequest, error) {
-	compat, err := parseChatCompatRequest(cfg, body, userAgent)
+func parseChatProxyRequest(body []byte, userAgent string) (chatProxyRequest, error) {
+	compat, err := parseChatCompatRequest(body, userAgent)
 	if err != nil {
 		return chatProxyRequest{}, err
 	}
@@ -35,7 +34,7 @@ func parseChatProxyRequest(cfg config.Config, body []byte, userAgent string) (ch
 	if len(request.Messages) == 0 {
 		return chatProxyRequest{}, errors.New("chat completions requests require messages")
 	}
-	translation := openai.ToCodex(cfg, request)
+	translation := openai.ToCodex(request)
 	return chatProxyRequest{
 		CodexRequest:         translation.Request,
 		TupleSchema:          translation.TupleSchema,
@@ -57,7 +56,7 @@ func parseChatCompletionRequest(body []byte, userAgent string) (openai.ChatCompl
 	return request, nil
 }
 
-func parseChatCompatRequest(cfg config.Config, body []byte, userAgent string) (*chatProxyRequest, error) {
+func parseChatCompatRequest(body []byte, userAgent string) (*chatProxyRequest, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
@@ -87,9 +86,6 @@ func parseChatCompatRequest(cfg config.Config, body []byte, userAgent string) (*
 	}
 	if request.Reasoning != nil && strings.TrimSpace(request.Reasoning.Summary) == "" {
 		request.Reasoning.Summary = "auto"
-	}
-	if strings.TrimSpace(request.Model) == "" {
-		request.Model = cfg.Model.DefaultModel
 	}
 	request.ForceInstructions = true
 	request.Store = false

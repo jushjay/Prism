@@ -10,7 +10,6 @@ import (
 type Config struct {
 	Server   ServerConfig
 	Upstream UpstreamConfig
-	Model    ModelConfig
 	Audit    AuditConfig
 	Sidecar  SidecarConfig
 }
@@ -22,15 +21,7 @@ type ServerConfig struct {
 
 type UpstreamConfig struct {
 	BaseURL      string
-	UserAgent    string
-	Originator   string
 	PreserveHost bool
-}
-
-type ModelConfig struct {
-	DefaultModel           string
-	DefaultReasoningEffort string
-	InjectDesktopContext   bool
 }
 
 type AuditConfig struct {
@@ -58,14 +49,7 @@ func Load() Config {
 		},
 		Upstream: UpstreamConfig{
 			BaseURL:      strings.TrimRight(getEnv("SUB2API_BASE_URL", "http://127.0.0.1:8080"), "/"),
-			UserAgent:    getEnv("UPSTREAM_USER_AGENT", ""),
-			Originator:   getEnv("UPSTREAM_ORIGINATOR", ""),
 			PreserveHost: getEnvBool("UPSTREAM_PRESERVE_HOST", true),
-		},
-		Model: ModelConfig{
-			DefaultModel:           getEnv("DEFAULT_MODEL", "gpt-5.4"),
-			DefaultReasoningEffort: getEnv("DEFAULT_REASONING_EFFORT", "medium"),
-			InjectDesktopContext:   getEnvBool("INJECT_DESKTOP_CONTEXT", false),
 		},
 		Audit: AuditConfig{
 			CursorRequestLogEnabled: getEnvBool("CURSOR_AUDIT_LOG_ENABLED", false),

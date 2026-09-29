@@ -13,12 +13,11 @@ import (
 	"github.com/jushjay/prism/internal/reasoning"
 )
 
-// resolveUpstreamRequest fills the default model, rewrites mapped model names
-// and injects a reasoning effort when the Cursor request did not carry one.
+const errModelRequired = "model is required"
+
+// resolveUpstreamRequest rewrites configured model names and injects the
+// model's reasoning effort when the Cursor request did not carry one.
 func (s *Server) resolveUpstreamRequest(request codex.ResponsesRequest, hasExplicitReasoning bool) codex.ResponsesRequest {
-	if strings.TrimSpace(request.Model) == "" {
-		request.Model = s.cfg.Model.DefaultModel
-	}
 	if strings.TrimSpace(request.PromptCacheKey) == "" {
 		request.PromptCacheKey = codex.StableConversationKey(request)
 	}
@@ -26,21 +25,15 @@ func (s *Server) resolveUpstreamRequest(request codex.ResponsesRequest, hasExpli
 	if resolution.TargetModel != "" {
 		request.Model = resolution.TargetModel
 	}
-	applyDefaultReasoningEffort(&request, resolution, hasExplicitReasoning, s.cfg.Model.DefaultReasoningEffort)
+	applyModelReasoningEffort(&request, resolution, hasExplicitReasoning)
 	return request
 }
 
-func applyDefaultReasoningEffort(request *codex.ResponsesRequest, resolution reasoning.Resolution, hasExplicitReasoning bool, globalEffort string) {
+func applyModelReasoningEffort(request *codex.ResponsesRequest, resolution reasoning.Resolution, hasExplicitReasoning bool) {
 	if hasExplicitReasoning {
 		return
 	}
 	effort := strings.TrimSpace(resolution.ReasoningEffort)
-	if effort == "" {
-		effort = strings.TrimSpace(resolution.DefaultReasoningEffort)
-	}
-	if effort == "" {
-		effort = strings.TrimSpace(globalEffort)
-	}
 	if effort == "" {
 		return
 	}

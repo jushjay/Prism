@@ -76,12 +76,6 @@ func (c *Client) CreateResponse(ctx context.Context, request ResponsesRequest, h
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Accept-Encoding", "identity")
-	if ua := strings.TrimSpace(c.cfg.UserAgent); ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
-	if originator := strings.TrimSpace(c.cfg.Originator); originator != "" {
-		req.Header.Set("Originator", originator)
-	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, body, err

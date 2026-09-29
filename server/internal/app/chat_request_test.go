@@ -3,7 +3,6 @@ package app
 import (
 	"testing"
 
-	"github.com/jushjay/prism/internal/config"
 	"github.com/jushjay/prism/internal/openai"
 )
 
@@ -72,9 +71,7 @@ func TestParseChatProxyRequestPreservesPreviousResponseIDForChatPayload(t *testi
 		"stream": false
 	}`)
 
-	proxyRequest, err := parseChatProxyRequest(config.Config{
-		Model: config.ModelConfig{DefaultModel: "gpt-5.4"},
-	}, body, "Cursor/1.0")
+	proxyRequest, err := parseChatProxyRequest(body, "Cursor/1.0")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,9 +124,7 @@ func TestParseChatProxyRequestSupportsResponsesCompatTools(t *testing.T) {
 		}
 	}`)
 
-	proxyRequest, err := parseChatProxyRequest(config.Config{
-		Model: config.ModelConfig{DefaultModel: "gpt-5.4"},
-	}, body, "Cursor/1.0")
+	proxyRequest, err := parseChatProxyRequest(body, "Cursor/1.0")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,9 +193,7 @@ func TestParseChatProxyRequestPreservesCustomToolCallInput(t *testing.T) {
 		"stream": true
 	}`)
 
-	proxyRequest, err := parseChatProxyRequest(config.Config{
-		Model: config.ModelConfig{DefaultModel: "gpt-5.4"},
-	}, body, "Cursor/1.0")
+	proxyRequest, err := parseChatProxyRequest(body, "Cursor/1.0")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,9 +223,7 @@ func TestParseChatProxyRequestDoesNotApplyCompatForNonCursor(t *testing.T) {
 		"tools": [{"type":"custom","name":"ApplyPatch"}]
 	}`)
 
-	_, err := parseChatProxyRequest(config.Config{
-		Model: config.ModelConfig{DefaultModel: "gpt-5.4"},
-	}, body, "curl/8.0")
+	_, err := parseChatProxyRequest(body, "curl/8.0")
 	if err == nil {
 		t.Fatal("expected non-Cursor compat payload to be rejected by chat parser")
 	}
@@ -253,7 +244,7 @@ func TestToCodexSupportsRootToolNameForFunctionTool(t *testing.T) {
 		t.Fatalf("unexpected parse error: %v", err)
 	}
 	request.Tools[0].Function = openai.ToolSpec{}
-	translated := openai.ToCodex(config.Config{Model: config.ModelConfig{DefaultModel: "gpt-5.4"}}, request)
+	translated := openai.ToCodex(request)
 	if len(translated.Request.Tools) != 1 {
 		t.Fatalf("expected one tool, got %d", len(translated.Request.Tools))
 	}
@@ -284,9 +275,7 @@ func TestToCodexPreservesAssistantReasoningContent(t *testing.T) {
 		t.Fatalf("unexpected parse error: %v", err)
 	}
 
-	translated := openai.ToCodex(config.Config{
-		Model: config.ModelConfig{DefaultModel: "deepseek-v4-pro"},
-	}, request)
+	translated := openai.ToCodex(request)
 
 	if len(translated.Request.Input) != 3 {
 		t.Fatalf("expected 3 input items, got %d", len(translated.Request.Input))

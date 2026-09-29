@@ -13,13 +13,12 @@ import (
 )
 
 func TestCreateResponsePostsToSub2APIResponses(t *testing.T) {
-	var gotPath, gotAuth, gotUA, gotOriginator, gotAccept string
+	var gotPath, gotAuth, gotUA, gotAccept string
 	var gotBody map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotUA = r.Header.Get("User-Agent")
-		gotOriginator = r.Header.Get("Originator")
 		gotAccept = r.Header.Get("Accept")
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &gotBody)
@@ -28,7 +27,7 @@ func TestCreateResponsePostsToSub2APIResponses(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	client := NewClient(config.UpstreamConfig{BaseURL: upstream.URL, UserAgent: "codex_cli_rs/0.1", Originator: "codex_cli_rs"}, http.DefaultTransport)
+	client := NewClient(config.UpstreamConfig{BaseURL: upstream.URL}, http.DefaultTransport)
 	header := http.Header{}
 	header.Set("Authorization", "Bearer sk-sub2api")
 	header.Set("User-Agent", "Cursor/1.0")
@@ -50,8 +49,8 @@ func TestCreateResponsePostsToSub2APIResponses(t *testing.T) {
 	if gotPath != "/v1/responses" || gotAuth != "Bearer sk-sub2api" || gotAccept != "text/event-stream" {
 		t.Fatalf("unexpected request path=%q auth=%q accept=%q", gotPath, gotAuth, gotAccept)
 	}
-	if gotUA != "codex_cli_rs/0.1" || gotOriginator != "codex_cli_rs" {
-		t.Fatalf("expected configured UA/originator, got %q %q", gotUA, gotOriginator)
+	if gotUA != "Cursor/1.0" {
+		t.Fatalf("expected client User-Agent to be forwarded, got %q", gotUA)
 	}
 	if gotBody["stream"] != true || gotBody["store"] != false {
 		t.Fatalf("expected stream=true store=false, got %#v", gotBody)

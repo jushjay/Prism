@@ -18,8 +18,9 @@ Cursor / other clients --> nginx --> sidecar --> sub2api
 - **Non-Cursor requests** are reverse-proxied to sub2api untouched (body, headers, status, SSE and WebSocket).
 - **Cursor requests** (`User-Agent` contains `Cursor/` and the request is `POST /v1/chat/completions` or `POST /v1/responses`):
   1. The request is normalized (tool definitions, `function_call_output`, `call_id`, structured-output schemas).
-  2. Reasoning effort: an explicit `reasoning_effort` / `reasoning.effort` is kept. Otherwise it is filled in using
-     the `sidecar.yaml` model mapping effort, then `reasoning_defaults` for the target model, then `DEFAULT_REASONING_EFFORT`.
+  2. Reasoning effort: an explicit `reasoning_effort` / `reasoning.effort` is kept. Otherwise the effort configured for that
+     model in `sidecar.yaml` is used (exactly one effort per model). Unlisted models are forwarded unchanged without an effort.
+     Requests without a `model` are rejected with 400.
   3. The request is converted to a Responses request and sent to sub2api `/v1/responses` (always `stream=true`, `store=false`).
   4. Upstream SSE is converted back into what Cursor expects: Chat Completions chunks (with `reasoning_content`, `tool_calls`, usage) or Responses events. Non-stream requests get an aggregated JSON body.
   5. sub2api errors (status code and body) are passed straight through.
@@ -35,30 +36,25 @@ The sidecar does no authentication: the client's `Authorization` header (the sub
 | `HOST` / `PORT` | `127.0.0.1` / `8090` | Listen address |
 | `SUB2API_BASE_URL` | `http://127.0.0.1:8080` | sub2api root URL (without `/v1`) |
 | `UPSTREAM_PRESERVE_HOST` | `true` | Keep the client `Host` header when proxying |
-| `UPSTREAM_USER_AGENT` / `UPSTREAM_ORIGINATOR` | empty | Optional `User-Agent` override / `Originator` header for rewritten Cursor requests |
-| `DEFAULT_MODEL` | `gpt-5.4` | Used when a Cursor request has no model |
-| `DEFAULT_REASONING_EFFORT` | `medium` | Global fallback effort |
-| `SIDECAR_CONFIG` | `server/configs/sidecar.yaml` | Model mapping file; must exist when set explicitly |
+| `SIDECAR_CONFIG` | `server/configs/sidecar.yaml` | Model / reasoning effort file; must exist when set explicitly |
 | `DATA_DIR` | `./data` | Audit log directory |
 | `CURSOR_AUDIT_LOG_ENABLED` / `UPSTREAM_AUDIT_LOG_ENABLED` | `false` | Inbound Cursor / outbound sidecar audit logs (jsonl, contain prompts, `Authorization` is redacted) |
 
 ### sidecar.yaml
 
+Each key is the model name Cursor sends (the custom model added in Cursor), and each model has exactly one effort:
+
 ```yaml
-# Virtual model names: add them as custom models in Cursor to pick an effort by name
 models:
-  - { name: gpt-5.4-high,  target: gpt-5.4, reasoning_effort: high }
-  - { name: gpt-5.4-xhigh, target: gpt-5.4, reasoning_effort: xhigh }
-
-# Default effort per upstream model when neither the request nor a mapping sets one
-reasoning_defaults:
-  gpt-5.4: medium
-
-# Plain renames (no effort change)
-aliases: {}
+  gpt-5.4:       { reasoning_effort: medium }                   # effort for the base model
+  gpt-5.4-high:  { target: gpt-5.4, reasoning_effort: high }    # virtual model: sent as gpt-5.4 + high
+  gpt-5.4-xhigh: { target: gpt-5.4, reasoning_effort: xhigh }
 ```
 
-Supported efforts: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`. Restart the service after changes.
+- `target`: upstream model sent to sub2api; defaults to the key.
+- `reasoning_effort`: required, one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`. A missing or invalid effort, or a duplicate model, fails startup.
+
+Restart the service after changes.
 
 ## Running locally
 
@@ -88,7 +84,7 @@ In Cursor's Models settings:
 
 1. Enable *OpenAI API Key* and enter your sub2api API key.
 2. Enable *Override OpenAI Base URL* and set it to `https://<your-domain>/v1`.
-3. Add custom models such as `gpt-5.4` or `gpt-5.4-high` (matching `sidecar.yaml`).
+3. Add custom models such as `gpt-5.4` or `gpt-5.4-high` (matching the `models` keys in `sidecar.yaml`).
 
 ## Layout
 
@@ -97,7 +93,7 @@ In Cursor's Models settings:
 - `server/internal/codex`: Responses request model, sanitizing/serialization, sub2api client
 - `server/internal/openai`: Chat Completions to Responses translation
 - `server/internal/schema`: tuple schema compatibility for structured outputs
-- `server/internal/reasoning`: `sidecar.yaml` model mappings and default efforts
+- `server/internal/reasoning`: `sidecar.yaml` per-model reasoning efforts
 - `deploy/sidecar`: systemd unit, nginx example, install script
 
 ## Acknowledgements

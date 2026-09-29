@@ -10,31 +10,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type ModelMapping struct {
-	Name            string `yaml:"name"`
+// Model is one entry of sidecar.yaml `models`, keyed by the model name Cursor
+// sends. Every model carries exactly one reasoning effort.
+type Model struct {
 	Target          string `yaml:"target"`
 	ReasoningEffort string `yaml:"reasoning_effort"`
 }
 
 type FileConfig struct {
-	Models            []ModelMapping    `yaml:"models"`
-	ReasoningDefaults map[string]string `yaml:"reasoning_defaults"`
-	Aliases           map[string]string `yaml:"aliases"`
+	Models map[string]Model `yaml:"models"`
 }
 
-// Resolution describes how a requested model is sent upstream.
-// ReasoningEffort comes from an explicit model mapping and wins over
-// DefaultReasoningEffort, which is the per-target-model default.
+// Resolution describes how a requested model is sent upstream. ReasoningEffort
+// is empty for models that are not configured.
 type Resolution struct {
-	TargetModel            string
-	ReasoningEffort        string
-	DefaultReasoningEffort string
+	TargetModel     string
+	ReasoningEffort string
 }
 
 type Resolver struct {
-	mappings map[string]ModelMapping
-	defaults map[string]string
-	aliases  map[string]string
+	models map[string]Model
 }
 
 var validEfforts = map[string]struct{}{
@@ -62,18 +57,14 @@ func Load(path string, required bool) (*Resolver, error) {
 }
 
 func New(cfg FileConfig) (*Resolver, error) {
-	r := &Resolver{
-		mappings: map[string]ModelMapping{},
-		defaults: map[string]string{},
-		aliases:  map[string]string{},
-	}
-	for _, item := range cfg.Models {
-		name := strings.TrimSpace(item.Name)
+	r := &Resolver{models: map[string]Model{}}
+	for rawName, item := range cfg.Models {
+		name := strings.TrimSpace(rawName)
 		if name == "" {
-			return nil, errors.New("models[].name is required")
+			return nil, errors.New("models: empty model name")
 		}
-		if _, exists := r.mappings[name]; exists {
-			return nil, fmt.Errorf("duplicate model mapping %q", name)
+		if _, exists := r.models[name]; exists {
+			return nil, fmt.Errorf("models: duplicate model %q", name)
 		}
 		effort, err := normalizeEffort(item.ReasoningEffort)
 		if err != nil {
@@ -83,24 +74,7 @@ func New(cfg FileConfig) (*Resolver, error) {
 		if target == "" {
 			target = name
 		}
-		r.mappings[name] = ModelMapping{Name: name, Target: target, ReasoningEffort: effort}
-	}
-	for model, value := range cfg.ReasoningDefaults {
-		model = strings.TrimSpace(model)
-		effort, err := normalizeEffort(value)
-		if err != nil {
-			return nil, fmt.Errorf("reasoning_defaults[%s]: %w", model, err)
-		}
-		if model != "" && effort != "" {
-			r.defaults[model] = effort
-		}
-	}
-	for alias, target := range cfg.Aliases {
-		alias = strings.TrimSpace(alias)
-		target = strings.TrimSpace(target)
-		if alias != "" && target != "" {
-			r.aliases[alias] = target
-		}
+		r.models[name] = Model{Target: target, ReasoningEffort: effort}
 	}
 	return r, nil
 }
@@ -110,32 +84,25 @@ func (r *Resolver) Resolve(model string) Resolution {
 	if requested == "" {
 		return Resolution{}
 	}
-	resolution := Resolution{TargetModel: requested}
-	if r == nil {
-		return resolution
+	if r != nil {
+		if item, ok := r.models[requested]; ok {
+			return Resolution{TargetModel: item.Target, ReasoningEffort: item.ReasoningEffort}
+		}
 	}
-	if mapping, ok := r.mappings[requested]; ok {
-		resolution.TargetModel = mapping.Target
-		resolution.ReasoningEffort = mapping.ReasoningEffort
-	}
-	if target, ok := r.aliases[resolution.TargetModel]; ok {
-		resolution.TargetModel = target
-	}
-	resolution.DefaultReasoningEffort = r.defaults[resolution.TargetModel]
-	return resolution
+	return Resolution{TargetModel: requested}
 }
 
-func (r *Resolver) MappingCount() int {
+func (r *Resolver) ModelCount() int {
 	if r == nil {
 		return 0
 	}
-	return len(r.mappings)
+	return len(r.models)
 }
 
 func normalizeEffort(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "" {
-		return "", nil
+		return "", errors.New("reasoning_effort is required")
 	}
 	if _, ok := validEfforts[value]; !ok {
 		return "", fmt.Errorf("unsupported reasoning effort %q", value)

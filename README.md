@@ -18,13 +18,13 @@ Cursor / 其他客户端 --> nginx --> sidecar --> sub2api
 - **非 Cursor 请求**：原样反向代理到 sub2api（请求体、请求头、状态码、响应体、SSE、WebSocket 都不做修改）。
 - **Cursor 请求**（`User-Agent` 包含 `Cursor/`，且为 `POST /v1/chat/completions` 或 `POST /v1/responses`）：
   1. 规范化请求（工具定义、`function_call_output`、`call_id`、结构化输出 schema 等）。
-  2. 判定思考强度：请求里显式带了 `reasoning_effort` / `reasoning.effort` 就保留；否则按以下优先级补全：
-     `sidecar.yaml` 模型映射的强度 > `reasoning_defaults` 中该模型的默认强度 > 环境变量 `DEFAULT_REASONING_EFFORT`。
+  2. 判定思考强度：请求里显式带了 `reasoning_effort` / `reasoning.effort` 就保留；否则使用 `sidecar.yaml` 中该模型配置的强度（每个模型一一对应）。未配置的模型不注入强度，模型名原样转发。
+     请求未带 `model` 时直接返回 400。
   3. 统一转换为 Responses 请求，发往 sub2api 的 `/v1/responses`（上游固定 `stream=true`、`store=false`）。
   4. 把上游 SSE 转回 Cursor 需要的格式：Chat Completions chunk（含 `reasoning_content`、`tool_calls`、usage）或 Responses 事件；非流式请求会聚合为完整 JSON。
   5. sub2api 返回的错误（状态码 + 响应体）直接透传给 Cursor。
 
-鉴权不在 sidecar 处理：客户端的 `Authorization`（即 sub2api 的 API Key）原样转发给 sub2api。
+sidecar 不做任何鉴权：客户端的 `Authorization`（即 sub2api 的 API Key）原样转发给 sub2api 校验。
 
 ## 配置
 
@@ -35,30 +35,25 @@ Cursor / 其他客户端 --> nginx --> sidecar --> sub2api
 | `HOST` / `PORT` | `127.0.0.1` / `8090` | 监听地址 |
 | `SUB2API_BASE_URL` | `http://127.0.0.1:8080` | sub2api 根地址（不带 `/v1`） |
 | `UPSTREAM_PRESERVE_HOST` | `true` | 反代时保留客户端的 `Host` 头 |
-| `UPSTREAM_USER_AGENT` / `UPSTREAM_ORIGINATOR` | 空 | 可选，覆盖改写后 Cursor 请求的 `User-Agent` / 添加 `Originator` |
-| `DEFAULT_MODEL` | `gpt-5.4` | Cursor 请求未带模型时使用 |
-| `DEFAULT_REASONING_EFFORT` | `medium` | 全局兜底思考强度 |
-| `SIDECAR_CONFIG` | `server/configs/sidecar.yaml` | 模型映射配置；显式指定时文件必须存在 |
+| `SIDECAR_CONFIG` | `server/configs/sidecar.yaml` | 模型与思考强度配置；显式指定时文件必须存在 |
 | `DATA_DIR` | `./data` | 审计日志目录 |
 | `CURSOR_AUDIT_LOG_ENABLED` / `UPSTREAM_AUDIT_LOG_ENABLED` | `false` | Cursor 入站 / sidecar 出站审计日志（jsonl，含提示词，`Authorization` 会脱敏） |
 
 ### sidecar.yaml
 
+每个 key 是 Cursor 发送的模型名（即 Cursor 中添加的自定义模型），每个模型对应唯一的思考强度：
+
 ```yaml
-# 虚拟模型名：在 Cursor 中添加这些自定义模型，即可按模型名选择思考强度
 models:
-  - { name: gpt-5.4-high,  target: gpt-5.4, reasoning_effort: high }
-  - { name: gpt-5.4-xhigh, target: gpt-5.4, reasoning_effort: xhigh }
-
-# 请求和映射都没指定强度时，按上游模型取默认强度
-reasoning_defaults:
-  gpt-5.4: medium
-
-# 纯改名（不改强度）
-aliases: {}
+  gpt-5.4:       { reasoning_effort: medium }                   # 基础模型的默认强度
+  gpt-5.4-high:  { target: gpt-5.4, reasoning_effort: high }    # 虚拟模型：改写为 gpt-5.4 + high
+  gpt-5.4-xhigh: { target: gpt-5.4, reasoning_effort: xhigh }
 ```
 
-支持的强度：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`。修改后需重启服务。
+- `target`：发往 sub2api 的真实模型，省略时等于 key。
+- `reasoning_effort`：必填，可选 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`；缺失、非法或模型重复都会导致启动失败。
+
+修改后需重启服务。
 
 ## 本地运行
 
@@ -88,7 +83,7 @@ sudo ./deploy/sidecar/install.sh --with-nginx  # 同时安装 nginx 站点示例
 
 1. 打开 *OpenAI API Key*，填入 sub2api 的 API Key。
 2. 打开 *Override OpenAI Base URL*，填 `https://<你的域名>/v1`。
-3. 添加自定义模型，例如 `gpt-5.4`、`gpt-5.4-high`（与 `sidecar.yaml` 中的映射一致）。
+3. 添加自定义模型，例如 `gpt-5.4`、`gpt-5.4-high`（与 `sidecar.yaml` 中 `models` 的 key 一致）。
 
 ## 仓库结构
 
@@ -97,7 +92,7 @@ sudo ./deploy/sidecar/install.sh --with-nginx  # 同时安装 nginx 站点示例
 - `server/internal/codex`：Responses 请求模型、清洗序列化、调用 sub2api
 - `server/internal/openai`：Chat Completions -> Responses 转换
 - `server/internal/schema`：结构化输出 tuple schema 兼容
-- `server/internal/reasoning`：`sidecar.yaml` 模型映射与默认强度
+- `server/internal/reasoning`：`sidecar.yaml` 模型与思考强度配置
 - `deploy/sidecar`：systemd、nginx、安装脚本
 
 ## 致谢

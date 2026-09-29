@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/jushjay/prism/internal/codex"
-	"github.com/jushjay/prism/internal/config"
 	"github.com/jushjay/prism/internal/schema"
 )
 
@@ -18,7 +17,7 @@ type TranslationResult struct {
 	ExplicitReasoningEffort string
 }
 
-func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
+func ToCodex(req ChatCompletionRequest) TranslationResult {
 	instructions := "You are a helpful assistant."
 	var systemParts []string
 	var input []codex.InputItem
@@ -64,11 +63,8 @@ func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
 	if len(systemParts) > 0 {
 		instructions = strings.Join(systemParts, "\n\n")
 	}
-	if cfg.Model.InjectDesktopContext {
-		instructions = "You are running behind the Prism compatibility layer.\n\n" + instructions
-	}
 	request := codex.ResponsesRequest{
-		Model:              resolveModel(cfg, req.Model),
+		Model:              strings.TrimSpace(req.Model),
 		Instructions:       instructions,
 		Input:              input,
 		Stream:             req.Stream,
@@ -80,13 +76,9 @@ func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
 	if explicitReasoning == "" && req.Reasoning != nil {
 		explicitReasoning = strings.TrimSpace(req.Reasoning.Effort)
 	}
-	effort := explicitReasoning
-	if effort == "" {
-		effort = cfg.Model.DefaultReasoningEffort
-	}
-	if effort != "" {
+	if explicitReasoning != "" {
 		request.Reasoning = &codex.Reasoning{
-			Effort:  effort,
+			Effort:  explicitReasoning,
 			Summary: "auto",
 		}
 	}
@@ -214,13 +206,6 @@ func normalizeContent(content any) any {
 	default:
 		return ""
 	}
-}
-
-func resolveModel(cfg config.Config, model string) string {
-	if strings.TrimSpace(model) == "" {
-		return cfg.Model.DefaultModel
-	}
-	return model
 }
 
 func derivePromptCacheKey(messages []ChatMessage) string {
