@@ -6,10 +6,15 @@ type ChatCompletionRequest struct {
 	Stream             bool            `json:"stream"`
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
 	ReasoningEffort    string          `json:"reasoning_effort,omitempty"`
+	Reasoning          *Reasoning      `json:"reasoning,omitempty"`
 	ServiceTier        string          `json:"service_tier,omitempty"`
 	Tools              []Tool          `json:"tools,omitempty"`
 	ToolChoice         any             `json:"tool_choice,omitempty"`
 	ResponseFormat     *ResponseFormat `json:"response_format,omitempty"`
+}
+
+type Reasoning struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type ChatMessage struct {

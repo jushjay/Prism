@@ -76,8 +76,11 @@ func ToCodex(cfg config.Config, req ChatCompletionRequest) TranslationResult {
 		PreviousResponseID: strings.TrimSpace(req.PreviousResponseID),
 		PromptCacheKey:     derivePromptCacheKey(req.Messages),
 	}
-	effort := req.ReasoningEffort
 	explicitReasoning := strings.TrimSpace(req.ReasoningEffort)
+	if explicitReasoning == "" && req.Reasoning != nil {
+		explicitReasoning = strings.TrimSpace(req.Reasoning.Effort)
+	}
+	effort := explicitReasoning
 	if effort == "" {
 		effort = cfg.Model.DefaultReasoningEffort
 	}
