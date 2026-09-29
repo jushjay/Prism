@@ -1,13 +1,88 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/jushjay/prism/internal/config"
 )
+
+func TestCreateResponsePostsToSub2APIResponses(t *testing.T) {
+	var gotPath, gotAuth, gotUA, gotOriginator, gotAccept string
+	var gotBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotUA = r.Header.Get("User-Agent")
+		gotOriginator = r.Header.Get("Originator")
+		gotAccept = r.Header.Get("Accept")
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {}\n\n")
+	}))
+	defer upstream.Close()
+
+	client := NewClient(config.UpstreamConfig{BaseURL: upstream.URL, UserAgent: "codex_cli_rs/0.1", Originator: "codex_cli_rs"}, http.DefaultTransport)
+	header := http.Header{}
+	header.Set("Authorization", "Bearer sk-sub2api")
+	header.Set("User-Agent", "Cursor/1.0")
+	request := PrepareRequest(ResponsesRequest{
+		Model:       "gpt-5.4",
+		Input:       []InputItem{{Role: "user", Content: "hi"}},
+		Reasoning:   &Reasoning{Effort: "high"},
+		ServiceTier: "priority",
+		Store:       true,
+	}, true)
+	resp, body, err := client.CreateResponse(context.Background(), request, header)
+	if err != nil {
+		t.Fatalf("CreateResponse: %v", err)
+	}
+	_ = resp.Body.Close()
+	if len(body) == 0 {
+		t.Fatal("expected sent body to be returned for auditing")
+	}
+	if gotPath != "/v1/responses" || gotAuth != "Bearer sk-sub2api" || gotAccept != "text/event-stream" {
+		t.Fatalf("unexpected request path=%q auth=%q accept=%q", gotPath, gotAuth, gotAccept)
+	}
+	if gotUA != "codex_cli_rs/0.1" || gotOriginator != "codex_cli_rs" {
+		t.Fatalf("expected configured UA/originator, got %q %q", gotUA, gotOriginator)
+	}
+	if gotBody["stream"] != true || gotBody["store"] != false {
+		t.Fatalf("expected stream=true store=false, got %#v", gotBody)
+	}
+	if _, ok := gotBody["service_tier"]; ok {
+		t.Fatalf("service_tier should be stripped, got %#v", gotBody)
+	}
+	include, _ := gotBody["include"].([]any)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected reasoning include, got %#v", gotBody["include"])
+	}
+}
+
+func TestCreateResponseReturnsUpstreamError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"invalid api key"}}`)
+	}))
+	defer upstream.Close()
+
+	client := NewClient(config.UpstreamConfig{BaseURL: upstream.URL}, http.DefaultTransport)
+	_, _, err := client.CreateResponse(context.Background(), ResponsesRequest{Model: "gpt-5.4"}, http.Header{})
+	upstreamErr, ok := err.(*UpstreamError)
+	if !ok {
+		t.Fatalf("expected UpstreamError, got %T %v", err, err)
+	}
+	if upstreamErr.StatusCode != http.StatusUnauthorized || !strings.Contains(upstreamErr.Body, "invalid api key") {
+		t.Fatalf("unexpected upstream error %#v", upstreamErr)
+	}
+}
 
 func TestStablePromptCacheKeyIsDeterministic(t *testing.T) {
 	request := ResponsesRequest{
@@ -53,282 +128,6 @@ func TestStableConversationKeyUsesConversationSeed(t *testing.T) {
 	}
 }
 
-func TestDefaultHeadersDoNotForceAcceptEncoding(t *testing.T) {
-	client := &Client{}
-
-	headers := client.defaultHeaders("token", "account-id")
-
-	if got := headers.Get("Accept-Encoding"); got != "" {
-		t.Fatalf("expected Accept-Encoding to be unset so Go can auto-decompress, got %q", got)
-	}
-}
-
-func TestCreateCustomResponseUsesOpenAICompatibleResponsesEndpoint(t *testing.T) {
-	var gotPath string
-	var gotAuth string
-	var gotUserAgent string
-	var gotModel string
-	var gotPreviousResponseID string
-	var gotPromptCacheKey string
-	var gotStream bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotAuth = r.Header.Get("Authorization")
-		gotUserAgent = r.Header.Get("User-Agent")
-		var payload ResponsesRequest
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		gotModel = payload.Model
-		gotPreviousResponseID = payload.PreviousResponseID
-		gotPromptCacheKey = payload.PromptCacheKey
-		gotStream = payload.Stream
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("event: response.completed\n"))
-		_, _ = w.Write([]byte(`data: {"response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n\n"))
-	}))
-	defer server.Close()
-
-	client := &Client{httpClient: server.Client()}
-	resp, err := client.CreateCustomResponse(t.Context(), server.URL+"/compat", "custom-key", "responses", "Custom-UA/1.0", ResponsesRequest{
-		Model:              "custom-model",
-		Input:              []InputItem{{Role: "user", Content: "hello"}},
-		PreviousResponseID: "resp_prev_123",
-		PromptCacheKey:     "conv_123",
-	})
-	if err != nil {
-		t.Fatalf("CreateCustomResponse() error = %v", err)
-	}
-	_ = resp.Body.Close()
-
-	if gotPath != "/compat/v1/responses" {
-		t.Fatalf("expected /compat/v1/responses path, got %q", gotPath)
-	}
-	if gotAuth != "Bearer custom-key" {
-		t.Fatalf("unexpected authorization header %q", gotAuth)
-	}
-	if gotUserAgent != "Custom-UA/1.0" {
-		t.Fatalf("expected user agent Custom-UA/1.0, got %q", gotUserAgent)
-	}
-	if gotModel != "custom-model" {
-		t.Fatalf("expected custom model, got %q", gotModel)
-	}
-	if gotPreviousResponseID != "resp_prev_123" {
-		t.Fatalf("expected previous_response_id to be preserved, got %q", gotPreviousResponseID)
-	}
-	if gotPromptCacheKey != "conv_123" {
-		t.Fatalf("expected prompt_cache_key to be preserved, got %q", gotPromptCacheKey)
-	}
-	if !gotStream {
-		t.Fatalf("expected upstream responses request to force stream=true")
-	}
-}
-
-func TestCreateCustomResponseUsesChatCompletionsEndpoint(t *testing.T) {
-	var gotPath string
-	var gotAcceptEncoding string
-	var gotUserAgent string
-	var gotMessages []map[string]any
-	var gotStreamOptions map[string]any
-	var gotTools []map[string]any
-	var gotToolChoice any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotAcceptEncoding = r.Header.Get("Accept-Encoding")
-		gotUserAgent = r.Header.Get("User-Agent")
-		var payload struct {
-			Messages      []map[string]any `json:"messages"`
-			StreamOptions map[string]any   `json:"stream_options"`
-			Tools         []map[string]any `json:"tools"`
-			ToolChoice    any              `json:"tool_choice"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		gotMessages = payload.Messages
-		gotStreamOptions = payload.StreamOptions
-		gotTools = payload.Tools
-		gotToolChoice = payload.ToolChoice
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"id":"chat_1","model":"chat-model","choices":[{"delta":{"content":"hello"}}]}` + "\n\n"))
-		_, _ = w.Write([]byte(`data: {"id":"chat_1","model":"chat-model","usage":{"prompt_tokens":1,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":4}},"choices":[]}` + "\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
-
-	client := &Client{httpClient: server.Client()}
-	resp, err := client.CreateCustomResponse(t.Context(), server.URL+"/compat", "custom-key", "/api/paas/v4/chat/completions", "Custom-UA/2.0", ResponsesRequest{
-		Model:        "chat-model",
-		Instructions: "system prompt",
-		Input:        []InputItem{{Role: "user", Content: "hello"}},
-		Tools: []Tool{
-			{
-				Type:        "function",
-				Name:        "Read",
-				Description: "Read a file",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{"type": "string"},
-					},
-				},
-			},
-		},
-		ToolChoice: map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name": "Read",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateCustomResponse() error = %v", err)
-	}
-	events, err := ParseSSE(resp)
-	if err != nil {
-		t.Fatalf("ParseSSE() error = %v", err)
-	}
-	if gotPath != "/compat/api/paas/v4/chat/completions" {
-		t.Fatalf("expected chat completions path, got %q", gotPath)
-	}
-	if gotAcceptEncoding != "identity" {
-		t.Fatalf("expected identity accept-encoding, got %q", gotAcceptEncoding)
-	}
-	if gotUserAgent != "Custom-UA/2.0" {
-		t.Fatalf("expected user agent Custom-UA/2.0, got %q", gotUserAgent)
-	}
-	if len(gotMessages) != 2 {
-		t.Fatalf("expected system and user messages, got %#v", gotMessages)
-	}
-	if len(gotTools) != 1 {
-		t.Fatalf("expected one tool, got %#v", gotTools)
-	}
-	if gotTools[0]["type"] != "function" {
-		t.Fatalf("expected function tool, got %#v", gotTools[0])
-	}
-	function, _ := gotTools[0]["function"].(map[string]any)
-	if function["name"] != "Read" {
-		t.Fatalf("expected tool function name Read, got %#v", function)
-	}
-	toolChoiceMap, ok := gotToolChoice.(map[string]any)
-	if !ok {
-		t.Fatalf("expected tool_choice object, got %#v", gotToolChoice)
-	}
-	toolChoiceFunction, _ := toolChoiceMap["function"].(map[string]any)
-	if toolChoiceFunction["name"] != "Read" {
-		t.Fatalf("expected tool_choice function Read, got %#v", gotToolChoice)
-	}
-	if got := gotStreamOptions["include_usage"]; got != true {
-		t.Fatalf("expected include_usage stream option, got %#v", gotStreamOptions)
-	}
-	text, usage, responseID, err := ReadResponseText(events)
-	if err != nil {
-		t.Fatalf("ReadResponseText() error = %v", err)
-	}
-	if responseID != "chat_1" || text != "hello" || usage.InputTokens != 1 || usage.OutputTokens != 2 || usage.CachedTokens != 3 || usage.ReasoningTokens != 4 {
-		t.Fatalf("unexpected converted stream responseID=%q text=%q usage=%+v", responseID, text, usage)
-	}
-}
-
-func TestCreateCustomResponsePreservesAssistantReasoningContentInChatCompletions(t *testing.T) {
-	var gotMessages []map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload struct {
-			Messages []map[string]any `json:"messages"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		gotMessages = payload.Messages
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"id":"chat_1","model":"chat-model","choices":[]}` + "\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
-
-	client := &Client{httpClient: server.Client()}
-	resp, err := client.CreateCustomResponse(t.Context(), server.URL, "custom-key", "/v1/chat/completions", "Custom-UA/2.0", ResponsesRequest{
-		Model:        "deepseek-v4-pro",
-		Instructions: "system prompt",
-		Input: []InputItem{
-			{Role: "user", Content: "first"},
-			{Role: "assistant", Content: "answer", ReasoningContent: "hidden chain"},
-			{Role: "user", Content: "continue"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateCustomResponse() error = %v", err)
-	}
-	_ = resp.Body.Close()
-
-	if len(gotMessages) != 4 {
-		t.Fatalf("expected 4 messages, got %#v", gotMessages)
-	}
-	assistant := gotMessages[2]
-	if assistant["role"] != "assistant" {
-		t.Fatalf("expected assistant message, got %#v", assistant)
-	}
-	if assistant["content"] != "answer" {
-		t.Fatalf("expected assistant content to be preserved, got %#v", assistant["content"])
-	}
-	if assistant["reasoning_content"] != "hidden chain" {
-		t.Fatalf("expected assistant reasoning_content to be preserved, got %#v", assistant["reasoning_content"])
-	}
-}
-
-func TestCreateCustomPassthroughForwardsRawRequest(t *testing.T) {
-	var gotPath string
-	var gotAuthorization string
-	var gotAccept string
-	var gotContentType string
-	var gotUserAgent string
-	var gotBody string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotAuthorization = r.Header.Get("Authorization")
-		gotAccept = r.Header.Get("Accept")
-		gotContentType = r.Header.Get("Content-Type")
-		gotUserAgent = r.Header.Get("User-Agent")
-		rawBody, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
-		}
-		gotBody = string(rawBody)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion"}`))
-	}))
-	defer server.Close()
-
-	client := &Client{httpClient: server.Client()}
-	resp, err := client.CreateCustomPassthrough(t.Context(), server.URL+"/compat", "custom-key", "/v1/chat/completions", "Custom-UA/3.0", []byte(`{"model":"deepseek-v4-pro","stream":true}`), map[string]string{
-		"accept":       "text/event-stream",
-		"content-type": "application/json",
-	})
-	if err != nil {
-		t.Fatalf("CreateCustomPassthrough() error = %v", err)
-	}
-	_ = resp.Body.Close()
-
-	if gotPath != "/compat/v1/chat/completions" {
-		t.Fatalf("expected passthrough path, got %q", gotPath)
-	}
-	if gotAuthorization != "Bearer custom-key" {
-		t.Fatalf("expected authorization header, got %q", gotAuthorization)
-	}
-	if gotAccept != "text/event-stream" {
-		t.Fatalf("expected accept header, got %q", gotAccept)
-	}
-	if gotContentType != "application/json" {
-		t.Fatalf("expected content-type header, got %q", gotContentType)
-	}
-	if gotUserAgent != "Custom-UA/3.0" {
-		t.Fatalf("expected user agent, got %q", gotUserAgent)
-	}
-	if gotBody != `{"model":"deepseek-v4-pro","stream":true}` {
-		t.Fatalf("expected raw body to be preserved, got %q", gotBody)
-	}
-}
-
 func TestParseUsagePrefersInputTokenDetailsCachedTokens(t *testing.T) {
 	usage := ParseUsage(map[string]any{
 		"input_tokens":  9411,
@@ -347,185 +146,6 @@ func TestParseUsagePrefersInputTokenDetailsCachedTokens(t *testing.T) {
 	}
 }
 
-func TestCreateCustomResponseConvertsChatCompletionsToolCalls(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"id\":\"chat_1\",\"model\":\"chat-model\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"id\":\"chat_1\",\"model\":\"chat-model\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"/tmp/test\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
-
-	client := &Client{httpClient: server.Client()}
-	resp, err := client.CreateCustomResponse(t.Context(), server.URL, "custom-key", "/v1/chat/completions", "", ResponsesRequest{
-		Model: "chat-model",
-		Input: []InputItem{{Role: "user", Content: "read file"}},
-	})
-	if err != nil {
-		t.Fatalf("CreateCustomResponse() error = %v", err)
-	}
-	events, err := ParseSSE(resp)
-	if err != nil {
-		t.Fatalf("ParseSSE() error = %v", err)
-	}
-
-	if len(events) < 3 {
-		t.Fatalf("expected converted tool call events, got %d", len(events))
-	}
-	if events[0].Event != "response.output_item.added" {
-		t.Fatalf("expected first event response.output_item.added, got %q", events[0].Event)
-	}
-	if events[1].Event != "response.function_call_arguments.delta" {
-		t.Fatalf("expected second event response.function_call_arguments.delta, got %q", events[1].Event)
-	}
-	if events[2].Event != "response.function_call_arguments.delta" {
-		t.Fatalf("expected third event response.function_call_arguments.delta, got %q", events[2].Event)
-	}
-	foundDone := false
-	for _, event := range events {
-		if event.Event == "response.function_call_arguments.done" {
-			foundDone = true
-			break
-		}
-	}
-	if !foundDone {
-		t.Fatal("expected response.function_call_arguments.done event")
-	}
-}
-
-func TestGetCustomModelsUsesDerivedModelsPath(t *testing.T) {
-	var gotPath string
-	var gotUserAgent string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotUserAgent = r.Header.Get("User-Agent")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"glm-4.5","object":"model","created":1753632000,"owned_by":"z-ai"}]}`))
-	}))
-	defer server.Close()
-
-	client := &Client{httpClient: server.Client()}
-	models, err := client.GetCustomModels(t.Context(), server.URL+"/compat", "custom-key", "/api/paas/v4/chat/completions", "Custom-UA/3.0")
-	if err != nil {
-		t.Fatalf("GetCustomModels() error = %v", err)
-	}
-	if gotPath != "/compat/api/paas/v4/models" {
-		t.Fatalf("expected derived models path, got %q", gotPath)
-	}
-	if gotUserAgent != "Custom-UA/3.0" {
-		t.Fatalf("expected user agent Custom-UA/3.0, got %q", gotUserAgent)
-	}
-	if len(models) != 1 || models[0]["id"] != "glm-4.5" {
-		t.Fatalf("unexpected models payload %#v", models)
-	}
-}
-
-func TestCreateCustomResponseNormalizesStructuredChatContent(t *testing.T) {
-	var gotMessages []map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload struct {
-			Messages []map[string]any `json:"messages"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		gotMessages = payload.Messages
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"id":"chat_1","model":"chat-model","choices":[]}` + "\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
-
-	client := &Client{httpClient: server.Client()}
-	_, err := client.CreateCustomResponse(t.Context(), server.URL, "custom-key", "chat_completions", "", ResponsesRequest{
-		Model: "chat-model",
-		Input: []InputItem{
-			{
-				Role: "user",
-				Content: []any{
-					map[string]any{"type": "input_text", "text": "hello"},
-					map[string]any{"type": "input_image", "image_url": "https://example.com/image.png"},
-				},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateCustomResponse() error = %v", err)
-	}
-
-	if len(gotMessages) != 1 {
-		t.Fatalf("expected one message, got %#v", gotMessages)
-	}
-	content, ok := gotMessages[0]["content"].([]any)
-	if !ok {
-		t.Fatalf("expected structured content, got %#v", gotMessages[0]["content"])
-	}
-	first, _ := content[0].(map[string]any)
-	second, _ := content[1].(map[string]any)
-	if first["type"] != "text" || first["text"] != "hello" {
-		t.Fatalf("expected input_text normalized to text, got %#v", first)
-	}
-	if second["type"] != "image_url" || second["image_url"] != "https://example.com/image.png" {
-		t.Fatalf("expected input_image normalized to image_url, got %#v", second)
-	}
-}
-
-func TestCreateCustomResponseBuildsStandardToolCallHistoryForChatCompletions(t *testing.T) {
-	var gotMessages []map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload struct {
-			Messages []map[string]any `json:"messages"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		gotMessages = payload.Messages
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"id":"chat_1","model":"chat-model","choices":[]}` + "\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
-
-	client := &Client{httpClient: server.Client()}
-	_, err := client.CreateCustomResponse(t.Context(), server.URL, "custom-key", "chat_completions", "", ResponsesRequest{
-		Model: "chat-model",
-		Input: []InputItem{
-			{Role: "user", Content: "hi"},
-			{Type: "function_call", CallID: "call_1", Name: "Read", Arguments: "{\"filePath\":\"/tmp/README.md\"}"},
-			{Type: "function_call_output", CallID: "call_1", Output: "file contents"},
-			{Role: "user", Content: "continue"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateCustomResponse() error = %v", err)
-	}
-
-	if len(gotMessages) != 4 {
-		t.Fatalf("expected 4 messages, got %#v", gotMessages)
-	}
-	if gotMessages[0]["role"] != "user" || gotMessages[0]["content"] != "hi" {
-		t.Fatalf("unexpected first message %#v", gotMessages[0])
-	}
-	if gotMessages[1]["role"] != "assistant" {
-		t.Fatalf("expected assistant tool call message, got %#v", gotMessages[1])
-	}
-	toolCalls, ok := gotMessages[1]["tool_calls"].([]any)
-	if !ok || len(toolCalls) != 1 {
-		t.Fatalf("expected one tool call, got %#v", gotMessages[1]["tool_calls"])
-	}
-	toolCall, _ := toolCalls[0].(map[string]any)
-	function, _ := toolCall["function"].(map[string]any)
-	if toolCall["id"] != "call_1" || function["name"] != "Read" || function["arguments"] != "{\"filePath\":\"/tmp/README.md\"}" {
-		t.Fatalf("unexpected tool call %#v", toolCall)
-	}
-	if gotMessages[2]["role"] != "tool" || gotMessages[2]["tool_call_id"] != "call_1" || gotMessages[2]["content"] != "file contents" {
-		t.Fatalf("unexpected tool result message %#v", gotMessages[2])
-	}
-	if gotMessages[3]["role"] != "user" || gotMessages[3]["content"] != "continue" {
-		t.Fatalf("unexpected final message %#v", gotMessages[3])
-	}
-}
-
 func TestResponsesRequestMarshalIncludesEmptyInstructions(t *testing.T) {
 	request := ResponsesRequest{
 		Model:        "gpt-5.4",
@@ -539,7 +159,7 @@ func TestResponsesRequestMarshalIncludesEmptyInstructions(t *testing.T) {
 	}
 
 	request.ForceInstructions = true
-	raw, err := marshalHTTPResponsesRequest(request)
+	raw, err := MarshalResponsesRequest(request)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -563,7 +183,7 @@ func TestResponsesRequestMarshalOmitsEmptyInstructionsByDefault(t *testing.T) {
 		Store:  false,
 	}
 
-	raw, err := marshalHTTPResponsesRequest(request)
+	raw, err := MarshalResponsesRequest(request)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -590,7 +210,7 @@ func TestResponsesRequestMarshalPreservesStructuredFunctionOutput(t *testing.T) 
 		Store:  false,
 	}
 
-	raw, err := marshalHTTPResponsesRequest(request)
+	raw, err := MarshalResponsesRequest(request)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -630,7 +250,7 @@ func TestResponsesRequestMarshalStripsUnsupportedCursorCompatFields(t *testing.T
 	}
 
 	request.ForceInstructions = true
-	raw, err := marshalHTTPResponsesRequest(request)
+	raw, err := MarshalResponsesRequest(request)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -675,7 +295,7 @@ func TestResponsesRequestMarshalFlattensFunctionTools(t *testing.T) {
 	}
 
 	request.ForceInstructions = true
-	raw, err := marshalHTTPResponsesRequest(request)
+	raw, err := MarshalResponsesRequest(request)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -715,7 +335,7 @@ func TestResponsesRequestMarshalNormalizesLongCompositeCallIDs(t *testing.T) {
 		Store:  false,
 	}
 
-	raw, err := marshalHTTPResponsesRequest(request)
+	raw, err := MarshalResponsesRequest(request)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
