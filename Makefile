@@ -3,37 +3,25 @@ include .env
 export
 endif
 
-HOST ?= 0.0.0.0
-PORT ?= 8080
-PROXY_API_KEY ?= dev-change-me
+BINARY ?= bin/sub2api-cursor-sidecar
 
-.PHONY: help dev api-dev web-dev web-install dev-info api-env-check
+.PHONY: help run build test install
 
 help:
 	@echo "Targets:"
-	@echo "  make api-dev    Start the Go API server"
-	@echo "  make api-env-check Verify env injection for the API process"
-	@echo "  make web-install Install frontend dependencies"
-	@echo "  make web-dev    Start the frontend dev server"
-	@echo "  make dev-info   Print the effective dev login key and backend URL"
+	@echo "  make run      Run the sidecar locally (reads .env)"
+	@echo "  make build    Build $(BINARY)"
+	@echo "  make test     Run go vet and tests"
+	@echo "  make install  Build and install as a systemd service (root)"
 
-dev: api-dev
+run:
+	cd server && go run ./cmd/prism
 
-api-dev:
-	@echo "Starting prism on http://$(HOST):$(PORT)"
-	@echo "Dashboard login key / API bearer token: $(PROXY_API_KEY)"
-	cd server && env HOST="$(HOST)" PORT="$(PORT)" PROXY_API_KEY='$(PROXY_API_KEY)' go run ./cmd/prism
+build:
+	cd server && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ../$(BINARY) ./cmd/prism
 
-api-env-check:
-	@env HOST="$(HOST)" PORT="$(PORT)" PROXY_API_KEY='$(PROXY_API_KEY)' bash -lc 'printf "HOST=%s\nPORT=%s\nPROXY_API_KEY=%s\n" "$$HOST" "$$PORT" "$$PROXY_API_KEY"'
+test:
+	cd server && go vet ./... && go test ./...
 
-web-install:
-	./scripts/web-frontend.sh install
-
-web-dev:
-	./scripts/web-frontend.sh dev --host 0.0.0.0 --port 5173
-
-dev-info:
-	@echo "Backend URL: http://$(HOST):$(PORT)"
-	@echo "Dashboard login key: $(PROXY_API_KEY)"
-	@echo "Bearer token: $(PROXY_API_KEY)"
+install:
+	./deploy/sidecar/install.sh

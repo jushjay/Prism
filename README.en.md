@@ -1,177 +1,105 @@
-# Prism
+# sub2api-cursor-sidecar
 
-Prism is a self-hosted proxy and dashboard for managing account pools, OpenAI-compatible API routes, usage analytics, basic access control, and model routing.
+[中文](README.md)
 
-The backend is written in Go. The dashboard is built with React, Umi Max, and Ant Design.
+A small sidecar that sits between nginx and [sub2api](https://github.com/Wei-Shaw/sub2api) and fixes two problems when Cursor talks to sub2api through a custom model:
 
-## Features
+1. **Lost reasoning effort**: Cursor does not send `reasoning_effort` for custom models, so upstream always uses its default.
+2. **Protocol mismatch**: when sub2api serves Codex OAuth accounts, the Chat Completions / Responses-variant payloads Cursor sends are not compatible with the upstream.
 
-- OpenAI OAuth account import and token refresh.
-- Custom upstream account management.
-- OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, and `/v1/models` routes.
-- Usage analytics grouped by account, model, and time range.
-- Security controls including dashboard authentication, bearer-token API access, IP filtering, and source statistics.
-- Optional request and egress audit logs for debugging.
-- Static dashboard hosting from the Go service when `web/dist` exists.
+It is a trimmed-down Prism: only the Cursor request handling is kept. Account pools, OAuth, the dashboard and the database are gone.
 
-## Intended Use
+## Request flow
 
-Prism is primarily a self-hosted tool for trusted operators. The currently validated workflow is focused on Cursor custom API integration and proxy use cases.
-
-Other IDEs, editors, or API clients may work, but they have not been systematically tested. If you need a broad multi-client proxy platform, evaluate the compatibility requirements before depending on this project.
-
-## Acknowledgements
-
-This project was partly inspired by ideas from [`icebear0828/codex-proxy`](https://github.com/icebear0828/codex-proxy). If you need a more general-purpose proxy, that project is worth evaluating as well.
-
-## Repository Layout
-
-- `server/`: Go API server.
-- `web/`: React + Ant Design dashboard.
-- `docs/`: Design notes and implementation references.
-- `.env.example`: Local configuration template.
-
-Runtime state is stored in `data/` by default. The `data/` directory is intentionally ignored because it can contain SQLite databases, OAuth tokens, audit logs, prompts, responses, headers, account metadata, and client IP information.
-
-## Requirements
-
-- Go 1.25+
-- Node.js 20+
-- pnpm, or Corepack with pnpm enabled
-
-## Quick Start
-
-1. Create a local environment file:
-
-```bash
-cp .env.example .env
+```
+Cursor / other clients --> nginx --> sidecar --> sub2api
 ```
 
-2. Edit `.env` and set at least:
+- **Non-Cursor requests** are reverse-proxied to sub2api untouched (body, headers, status, SSE and WebSocket).
+- **Cursor requests** (`User-Agent` contains `Cursor/` and the request is `POST /v1/chat/completions` or `POST /v1/responses`):
+  1. The request is normalized (tool definitions, `function_call_output`, `call_id`, structured-output schemas).
+  2. Reasoning effort: an explicit `reasoning_effort` / `reasoning.effort` is kept. Otherwise it is filled in using
+     the `sidecar.yaml` model mapping effort, then `reasoning_defaults` for the target model, then `DEFAULT_REASONING_EFFORT`.
+  3. The request is converted to a Responses request and sent to sub2api `/v1/responses` (always `stream=true`, `store=false`).
+  4. Upstream SSE is converted back into what Cursor expects: Chat Completions chunks (with `reasoning_content`, `tool_calls`, usage) or Responses events. Non-stream requests get an aggregated JSON body.
+  5. sub2api errors (status code and body) are passed straight through.
 
-```bash
-PROXY_API_KEY=<strong-random-secret>
-OPENAI_OAUTH_CLIENT_ID=<client-id-if-using-oauth>
-```
-
-`PROXY_API_KEY` is used as both the dashboard login password and the default bearer token for `/v1/*` routes.
-
-3. Start the backend:
-
-```bash
-make api-dev
-```
-
-4. In another terminal, install and start the dashboard dev server:
-
-```bash
-make web-install
-make web-dev
-```
-
-5. Build the dashboard for backend-hosted static serving:
-
-```bash
-cd web
-pnpm build
-```
-
-When `web/dist` exists, the Go server can serve the dashboard from the same origin.
+The sidecar does no authentication: the client's `Authorization` header (the sub2api API key) is forwarded as-is.
 
 ## Configuration
 
-The main configuration surface is `.env`. Important values include:
+### Environment variables
 
-- `HOST` and `PORT`: backend listen address.
-- `PROXY_API_KEY`: dashboard password and default API bearer token.
-- `STORAGE_DB_DIR` or `STORAGE_DB_FILE`: optional SQLite storage override.
-- `OPENAI_BASE_URL`: upstream Codex backend API base URL.
-- `OPENAI_OAUTH_CLIENT_ID`: OAuth client ID for account import.
-- `DEFAULT_MODEL`: default routed model.
-- `DEFAULT_REASONING_EFFORT`: default reasoning effort.
-- `defaultReasoningEffort` for each model in `server/configs/models.yaml`: the model-level fallback when a request omits reasoning effort. Explicit request values take precedence, followed by model mappings, the model default, and finally `DEFAULT_REASONING_EFFORT`.
-- `CURSOR_AUDIT_LOG_ENABLED`, `OPENAI_EGRESS_AUDIT_LOG_ENABLED`, `CUSTOM_EGRESS_AUDIT_LOG_ENABLED`: optional audit logging flags.
+| Variable | Default | Description |
+| --- | --- | --- |
+| `HOST` / `PORT` | `127.0.0.1` / `8090` | Listen address |
+| `SUB2API_BASE_URL` | `http://127.0.0.1:8080` | sub2api root URL (without `/v1`) |
+| `UPSTREAM_PRESERVE_HOST` | `true` | Keep the client `Host` header when proxying |
+| `UPSTREAM_USER_AGENT` / `UPSTREAM_ORIGINATOR` | empty | Optional `User-Agent` override / `Originator` header for rewritten Cursor requests |
+| `DEFAULT_MODEL` | `gpt-5.4` | Used when a Cursor request has no model |
+| `DEFAULT_REASONING_EFFORT` | `medium` | Global fallback effort |
+| `SIDECAR_CONFIG` | `server/configs/sidecar.yaml` | Model mapping file; must exist when set explicitly |
+| `DATA_DIR` | `./data` | Audit log directory |
+| `CURSOR_AUDIT_LOG_ENABLED` / `UPSTREAM_AUDIT_LOG_ENABLED` | `false` | Inbound Cursor / outbound sidecar audit logs (jsonl, contain prompts, `Authorization` is redacted) |
 
-For example:
+### sidecar.yaml
 
 ```yaml
-- id: gpt-5.6-luna
-  defaultReasoningEffort: max
-  supportedReasoningEfforts:
-    - { reasoningEffort: low }
-    - { reasoningEffort: medium }
-    - { reasoningEffort: high }
-    - { reasoningEffort: max }
+# Virtual model names: add them as custom models in Cursor to pick an effort by name
+models:
+  - { name: gpt-5.4-high,  target: gpt-5.4, reasoning_effort: high }
+  - { name: gpt-5.4-xhigh, target: gpt-5.4, reasoning_effort: xhigh }
+
+# Default effort per upstream model when neither the request nor a mapping sets one
+reasoning_defaults:
+  gpt-5.4: medium
+
+# Plain renames (no effort change)
+aliases: {}
 ```
 
-When a request for `gpt-5.6-luna` omits reasoning effort, Prism sends `max` upstream. An explicitly supplied value such as `low` or `medium` is preserved. Restart the backend after changing the model catalog.
+Supported efforts: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`. Restart the service after changes.
 
-Audit logging is disabled by default. If enabled, logs can contain sensitive request bodies, response bodies, headers, account labels, and client IP metadata.
-
-## Authentication
-
-- Dashboard login uses `PROXY_API_KEY`.
-- OpenAI-compatible `/v1/*` routes require `Authorization: Bearer <token>`.
-- The bearer token can be the global `PROXY_API_KEY` or an account-specific proxy key if configured.
-
-Example:
+## Running locally
 
 ```bash
-curl http://localhost:8080/v1/models \
-  -H "Authorization: Bearer ${PROXY_API_KEY}"
+cp .env.example .env   # adjust SUB2API_BASE_URL
+make run
+make test              # go vet + go test
+curl http://127.0.0.1:8090/_sidecar/health
 ```
 
-## Development Commands
+Requires Go 1.25+.
+
+## Deployment
 
 ```bash
-make api-dev
-make api-env-check
-make web-install
-make web-dev
-make dev-info
+sudo ./deploy/sidecar/install.sh               # build and install the sub2api-cursor-sidecar systemd service
+sudo ./deploy/sidecar/install.sh --with-nginx  # also install the example nginx site
 ```
 
-Backend tests:
+- Config lives in `/etc/sub2api-cursor-sidecar/sidecar.env` and `sidecar.yaml`; existing files are never overwritten.
+- See [`deploy/sidecar/nginx.conf`](deploy/sidecar/nginx.conf): point the site that used to `proxy_pass` to sub2api at the sidecar, with `proxy_buffering off` for SSE.
+- Health check: `GET /_sidecar/health` (never forwarded to sub2api).
 
-```bash
-cd server
-go test ./...
-```
+## Cursor settings
 
-Frontend build:
+In Cursor's Models settings:
 
-```bash
-cd web
-pnpm build
-```
+1. Enable *OpenAI API Key* and enter your sub2api API key.
+2. Enable *Override OpenAI Base URL* and set it to `https://<your-domain>/v1`.
+3. Add custom models such as `gpt-5.4` or `gpt-5.4-high` (matching `sidecar.yaml`).
 
-## Security Notes
+## Layout
 
-Before exposing Prism to any network you do not fully trust:
+- `server/cmd/prism`: entrypoint
+- `server/internal/app`: routing, reverse proxy, Cursor handlers and stream conversion
+- `server/internal/codex`: Responses request model, sanitizing/serialization, sub2api client
+- `server/internal/openai`: Chat Completions to Responses translation
+- `server/internal/schema`: tuple schema compatibility for structured outputs
+- `server/internal/reasoning`: `sidecar.yaml` model mappings and default efforts
+- `deploy/sidecar`: systemd unit, nginx example, install script
 
-- Set a strong `PROXY_API_KEY`.
-- Keep `.env`, `data/`, databases, WAL/SHM files, logs, backups, and auth files out of version control.
-- Keep audit logging disabled unless explicitly needed.
-- Put the service behind a trusted reverse proxy for internet-facing deployments.
-- Restrict dashboard access to trusted operators only.
-- Rotate credentials immediately if they were ever committed, shared, or exposed.
+## Acknowledgements
 
-Read [SECURITY.md](SECURITY.md) before running a public or semi-public deployment.
-
-## Release Hygiene
-
-This repository is prepared so that local runtime files are ignored by Git. Before publishing a fork or release, verify:
-
-- `git status --ignored --short` does not show unexpected tracked secrets.
-- `.env` contains only local secrets and is not tracked.
-- `data/` is not tracked.
-- Audit logs are not tracked.
-- You are not publishing old Git history that previously contained secrets or runtime data.
-
-## License
-
-This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
-
-This is a noncommercial source-available license. It is not an OSI-approved open-source license.
-
-In practical terms, personal use, learning, and modification are allowed under the license terms, but commercial use is not permitted.
+Some ideas come from [`icebear0828/codex-proxy`](https://github.com/icebear0828/codex-proxy).

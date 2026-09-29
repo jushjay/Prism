@@ -34,14 +34,12 @@ id_ed25519
 
 # Build outputs and dependencies
 server/prism
-server/vibe-coding-api
-web/dist
-web/node_modules
-web/.turbopack
-web/.mfsu
-web/src/.umi
-web/src/.umi-production
+server/sub2api-cursor-sidecar
+bin/
+# Removed dashboard; leftover local build artifacts from older checkouts
+web/
 
 # Local deployment scripts or machine-specific overrides
-deploy/
+deploy/*
+!deploy/sidecar/
 deploy.sh

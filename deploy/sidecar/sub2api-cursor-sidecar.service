@@ -1,0 +1,23 @@
+[Unit]
+Description=sub2api Cursor sidecar (Cursor reasoning effort + protocol compatibility)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/sub2api-cursor-sidecar/sidecar.env
+Environment=GIN_MODE=release
+Environment=SIDECAR_CONFIG=/etc/sub2api-cursor-sidecar/sidecar.yaml
+Environment=DATA_DIR=/var/lib/sub2api-cursor-sidecar
+ExecStart=/usr/local/bin/sub2api-cursor-sidecar
+Restart=always
+RestartSec=3
+DynamicUser=yes
+StateDirectory=sub2api-cursor-sidecar
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
