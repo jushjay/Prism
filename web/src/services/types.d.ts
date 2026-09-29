@@ -421,6 +421,20 @@ declare namespace Prism {
     accountId?: string;
   }
 
+  interface ModelWhitelist {
+    record_id: string;
+    model_name: string;
+    account_ids: string[];
+    created_at: string;
+    updated_at: string;
+  }
+
+  interface ModelWhitelistPayload {
+    recordId?: string;
+    modelName: string;
+    accountIds: string[];
+  }
+
   interface ModelReasoningDefault {
     model_id: string;
     display_name: string;

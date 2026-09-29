@@ -95,6 +95,50 @@ func TestHandleResponsesRecordsRequestEvent(t *testing.T) {
 	}
 }
 
+func TestHandleResponsesRoutesWhitelistedModelOnlyToAllowedAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var outsideHits atomic.Int32
+	server, sqliteStore := newTwoAccountRequestLogTestServer(t, []http.HandlerFunc{
+		func(w http.ResponseWriter, _ *http.Request) {
+			outsideHits.Add(1)
+			http.Error(w, "account is outside the model whitelist", http.StatusBadGateway)
+		},
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+			_, _ = w.Write([]byte(`data: {"delta":"ok"}` + "\n\n"))
+			_, _ = w.Write([]byte("event: response.completed\n"))
+			_, _ = w.Write([]byte(`data: {"response":{"id":"resp_whitelist","model":"deepseek-chat","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}` + "\n\n"))
+		},
+	})
+	defer sqliteStore.Close()
+
+	accounts := server.accounts.List()
+	if len(accounts) != 2 {
+		t.Fatalf("expected two accounts, got %d", len(accounts))
+	}
+	if _, err := server.models.UpsertModelWhitelist(models.ModelWhitelistInput{
+		ModelName:  "deepseek-chat",
+		AccountIDs: []string{accounts[1].ID},
+	}); err != nil {
+		t.Fatalf("UpsertModelWhitelist() error = %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"deepseek-chat","stream":false,"input":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer proxy-key")
+	server.engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if outsideHits.Load() != 0 {
+		t.Fatalf("expected outside account to receive no requests, got %d", outsideHits.Load())
+	}
+}
+
 func TestHandleResponsesRecordsEmptyRetryAttempts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1007,9 +1051,10 @@ func newTwoAccountRequestLogTestServer(t *testing.T, handlers []http.HandlerFunc
 				DefaultModel: "deepseek-chat",
 			},
 			Storage: config.StorageConfig{
-				ModelCacheFile:    filepath.Join(dir, "model-cache.json"),
-				ManualModelsFile:  filepath.Join(dir, "manual-models.json"),
-				ModelMappingsFile: filepath.Join(dir, "model-mappings.json"),
+				ModelCacheFile:      filepath.Join(dir, "model-cache.json"),
+				ManualModelsFile:    filepath.Join(dir, "manual-models.json"),
+				ModelMappingsFile:   filepath.Join(dir, "model-mappings.json"),
+				ModelWhitelistsFile: filepath.Join(dir, "model-whitelists.json"),
 			},
 		},
 		models.Catalog{},

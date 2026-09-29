@@ -36,6 +36,40 @@ func TestAcquireStrictPreferred(t *testing.T) {
 	}
 }
 
+func TestAcquireRestrictsToAllowedAccounts(t *testing.T) {
+	pool := &AccountPool{
+		cfg:        config.AuthConfig{MaxConcurrentPerAccount: 1},
+		inFlight:   map[string]int{},
+		lastIssued: map[string]time.Time{},
+		accounts: []Account{
+			{ID: "outside", Status: StatusActive},
+			{ID: "allowed-a", Status: StatusActive},
+			{ID: "allowed-b", Status: StatusActive},
+		},
+	}
+
+	lease, ok := pool.Acquire(AcquireOptions{AllowedIDs: []string{"allowed-a", "allowed-b"}})
+	if !ok {
+		t.Fatalf("expected acquire to succeed with allowed accounts")
+	}
+	if lease.ID != "allowed-a" && lease.ID != "allowed-b" {
+		t.Fatalf("expected an allowed account, got %s", lease.ID)
+	}
+	pool.Release(lease.ID)
+
+	if _, ok := pool.Acquire(AcquireOptions{AllowedIDs: []string{}}); ok {
+		t.Fatalf("expected an empty non-nil allowlist to reject every account")
+	}
+
+	if _, ok := pool.Acquire(AcquireOptions{
+		PreferredID:     "outside",
+		StrictPreferred: true,
+		AllowedIDs:      []string{"allowed-a"},
+	}); ok {
+		t.Fatalf("expected strict preferred account outside allowlist to be rejected")
+	}
+}
+
 func TestAcquireRespectsConcurrencyAndInterval(t *testing.T) {
 	pool := &AccountPool{
 		cfg:        config.AuthConfig{MaxConcurrentPerAccount: 1, RequestIntervalMs: 100},

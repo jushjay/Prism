@@ -292,6 +292,41 @@ export async function deleteModelMapping(id: string) {
   });
 }
 
+export async function listModelWhitelists() {
+  return request<Prism.ModelWhitelist[]>('/admin/models/whitelists');
+}
+
+export async function upsertModelWhitelist(
+  data: Prism.ModelWhitelistPayload,
+) {
+  return request<
+    Prism.SuccessResponse & { whitelist: Prism.ModelWhitelist }
+  >('/admin/models/whitelists', {
+    method: 'POST',
+    headers: jsonHeaders,
+    data,
+  });
+}
+
+export async function updateModelWhitelist(
+  id: string,
+  data: Omit<Prism.ModelWhitelistPayload, 'recordId'>,
+) {
+  return request<
+    Prism.SuccessResponse & { whitelist: Prism.ModelWhitelist }
+  >(`/admin/models/whitelists/${id}`, {
+    method: 'PUT',
+    headers: jsonHeaders,
+    data,
+  });
+}
+
+export async function deleteModelWhitelist(id: string) {
+  return request<Prism.SuccessResponse>(`/admin/models/whitelists/${id}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function getIPFilter() {
   return request<Prism.IPFilterOverview>('/admin/security/ip-filter');
 }

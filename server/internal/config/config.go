@@ -72,6 +72,7 @@ type StorageConfig struct {
 	ModelReasoningDefaultsFile string
 	ManualModelsFile           string
 	ModelMappingsFile          string
+	ModelWhitelistsFile        string
 	UsageStatsFile             string
 	VersionStateFile           string
 }
@@ -140,6 +141,7 @@ func Load() Config {
 			ModelReasoningDefaultsFile: filepath.Join(dataDir, "model-reasoning-defaults.json"),
 			ManualModelsFile:           filepath.Join(dataDir, "manual-models.json"),
 			ModelMappingsFile:          filepath.Join(dataDir, "model-mappings.json"),
+			ModelWhitelistsFile:        filepath.Join(dataDir, "model-whitelists.json"),
 			UsageStatsFile:             filepath.Join(dataDir, "usage-stats.json"),
 			VersionStateFile:           versionStateFile,
 		},

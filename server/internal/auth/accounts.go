@@ -154,6 +154,9 @@ type AcquireOptions struct {
 	PreferredID     string
 	StrictPreferred bool
 	ExcludeIDs      []string
+	// AllowedIDs restricts acquisition to the listed accounts. A nil slice keeps
+	// the pool unrestricted; an empty non-nil slice matches no accounts.
+	AllowedIDs []string
 }
 
 type Lease struct {
@@ -349,29 +352,41 @@ func (p *AccountPool) Acquire(options AcquireOptions) (Lease, bool) {
 	for _, id := range options.ExcludeIDs {
 		excludeSet[id] = struct{}{}
 	}
+	allowedSet := map[string]struct{}{}
+	allowed := options.AllowedIDs != nil
+	for _, id := range options.AllowedIDs {
+		allowedSet[id] = struct{}{}
+	}
 	for i := range p.accounts {
 		p.refreshAccountStatusLocked(&p.accounts[i], now)
 	}
 
 	if options.PreferredID != "" {
-		for _, account := range p.accounts {
-			if account.ID != options.PreferredID {
-				continue
-			}
-			if _, excluded := excludeSet[account.ID]; excluded {
-				return Lease{}, false
-			}
-			if isAccountUsable(account) && p.inFlight[account.ID] < p.maxConcurrentPerAccount() {
-				return p.issueLeaseLocked(account, now), true
-			}
-			if options.StrictPreferred {
-				return Lease{}, false
+		preferredAllowed := true
+		if allowed {
+			_, preferredAllowed = allowedSet[options.PreferredID]
+		}
+		if preferredAllowed {
+			for _, account := range p.accounts {
+				if account.ID != options.PreferredID {
+					continue
+				}
+				if _, excluded := excludeSet[account.ID]; excluded {
+					return Lease{}, false
+				}
+				if isAccountUsable(account) && p.inFlight[account.ID] < p.maxConcurrentPerAccount() {
+					return p.issueLeaseLocked(account, now), true
+				}
+				if options.StrictPreferred {
+					return Lease{}, false
+				}
 			}
 		}
 		if options.StrictPreferred {
 			return Lease{}, false
 		}
 	}
+
 	if len(p.accounts) == 0 {
 		return Lease{}, false
 	}
@@ -385,6 +400,11 @@ func (p *AccountPool) Acquire(options AcquireOptions) (Lease, bool) {
 		}
 		if _, excluded := excludeSet[account.ID]; excluded {
 			continue
+		}
+		if allowed {
+			if _, ok := allowedSet[account.ID]; !ok {
+				continue
+			}
 		}
 		candidates = append(candidates, account)
 	}

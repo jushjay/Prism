@@ -377,6 +377,91 @@ func TestServiceUpsertModelMappingByRecordID(t *testing.T) {
 	}
 }
 
+func TestServiceUpsertModelWhitelist(t *testing.T) {
+	dir := t.TempDir()
+	stateStore := store.NewJSONStore()
+	accountPool, err := auth.NewAccountPool(
+		filepath.Join(dir, "accounts.json"),
+		stateStore,
+		config.AuthConfig{},
+	)
+	if err != nil {
+		t.Fatalf("NewAccountPool() error = %v", err)
+	}
+	accountA, err := accountPool.AddAccount("token-a", "refresh-a")
+	if err != nil {
+		t.Fatalf("AddAccount(a) error = %v", err)
+	}
+	accountB, err := accountPool.AddAccount("token-b", "refresh-b")
+	if err != nil {
+		t.Fatalf("AddAccount(b) error = %v", err)
+	}
+
+	cfg := config.Config{
+		Storage: config.StorageConfig{
+			ModelCacheFile:      filepath.Join(dir, "model-cache.json"),
+			ManualModelsFile:    filepath.Join(dir, "manual-models.json"),
+			ModelMappingsFile:   filepath.Join(dir, "model-mappings.json"),
+			ModelWhitelistsFile: filepath.Join(dir, "model-whitelists.json"),
+		},
+	}
+	svc := &Service{accounts: accountPool, store: stateStore, cfg: cfg}
+	record, err := svc.UpsertModelWhitelist(ModelWhitelistInput{
+		ModelName:  " gpt-5.6 ",
+		AccountIDs: []string{accountA.ID, " ", accountB.ID, accountA.ID},
+	})
+	if err != nil {
+		t.Fatalf("UpsertModelWhitelist() error = %v", err)
+	}
+	if record.RecordID == "" || record.ModelName != "gpt-5.6" {
+		t.Fatalf("unexpected whitelist record %+v", record)
+	}
+	if len(record.AccountIDs) != 2 || record.AccountIDs[0] != accountA.ID || record.AccountIDs[1] != accountB.ID {
+		t.Fatalf("unexpected account IDs %+v", record.AccountIDs)
+	}
+
+	allowed, configured := svc.AllowedAccountIDs("gpt-5.6")
+	if !configured || len(allowed) != 2 {
+		t.Fatalf("expected configured whitelist, got configured=%v ids=%v", configured, allowed)
+	}
+	allowed[0] = "mutated"
+	allowedAgain, _ := svc.AllowedAccountIDs("gpt-5.6")
+	if allowedAgain[0] != accountA.ID {
+		t.Fatalf("expected allowlist result to be cloned, got %+v", allowedAgain)
+	}
+
+	updated, err := svc.UpsertModelWhitelist(ModelWhitelistInput{
+		RecordID:   record.RecordID,
+		ModelName:  "gpt-5.6",
+		AccountIDs: []string{accountB.ID},
+	})
+	if err != nil {
+		t.Fatalf("update UpsertModelWhitelist() error = %v", err)
+	}
+	if updated.RecordID != record.RecordID || len(updated.AccountIDs) != 1 || updated.AccountIDs[0] != accountB.ID {
+		t.Fatalf("unexpected updated whitelist %+v", updated)
+	}
+	if len(svc.ListModelWhitelists()) != 1 {
+		t.Fatalf("expected one whitelist after update")
+	}
+
+	reloaded, err := NewService(cfg, Catalog{}, accountPool, nil, nil, nil, stateStore)
+	if err != nil {
+		t.Fatalf("NewService() reload error = %v", err)
+	}
+	reloadedIDs, ok := reloaded.AllowedAccountIDs("gpt-5.6")
+	if !ok || len(reloadedIDs) != 1 || reloadedIDs[0] != accountB.ID {
+		t.Fatalf("expected persisted whitelist for account B, got ok=%v ids=%v", ok, reloadedIDs)
+	}
+
+	if err := reloaded.DeleteModelWhitelist(record.RecordID); err != nil {
+		t.Fatalf("DeleteModelWhitelist() error = %v", err)
+	}
+	if _, ok := reloaded.AllowedAccountIDs("gpt-5.6"); ok {
+		t.Fatalf("expected deleted whitelist to be inactive")
+	}
+}
+
 func TestGetCustomAccountCatalogRefreshesFromUpstreamAndPersists(t *testing.T) {
 	dir := t.TempDir()
 	sqliteStore, err := store.NewSQLiteStore(filepath.Join(dir, "state.db"), dir)

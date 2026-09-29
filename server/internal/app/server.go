@@ -117,6 +117,7 @@ func NewServer() (*Server, error) {
 		cfg.Storage.ModelReasoningDefaultsFile,
 		cfg.Storage.ManualModelsFile,
 		cfg.Storage.ModelMappingsFile,
+		cfg.Storage.ModelWhitelistsFile,
 		cfg.Storage.UsageStatsFile,
 		cfg.Storage.VersionStateFile,
 	}, cfg.Storage.JSONArchiveDir); err != nil {
@@ -332,6 +333,10 @@ func (s *Server) registerRoutes() {
 	s.engine.POST("/admin/models/mappings", s.handleAdminUpsertModelMapping)
 	s.engine.PUT("/admin/models/mappings/:id", s.handleAdminUpdateModelMapping)
 	s.engine.DELETE("/admin/models/mappings/:id", s.handleAdminDeleteModelMapping)
+	s.engine.GET("/admin/models/whitelists", s.handleAdminListModelWhitelists)
+	s.engine.POST("/admin/models/whitelists", s.handleAdminUpsertModelWhitelist)
+	s.engine.PUT("/admin/models/whitelists/:id", s.handleAdminUpdateModelWhitelist)
+	s.engine.DELETE("/admin/models/whitelists/:id", s.handleAdminDeleteModelWhitelist)
 	s.engine.GET("/admin/security/ip-filter", s.handleAdminIPSecurityOverview)
 	s.engine.POST("/admin/security/ip-filter", s.handleAdminIPSecuritySettings)
 	s.engine.POST("/admin/security/ip-rules", s.handleAdminIPSecurityRuleUpsert)
@@ -851,6 +856,10 @@ func (s *Server) handleResponses(c *gin.Context) {
 	var lastDecision *proxyErrorDecision
 	requestedModel := strings.TrimSpace(request.Model)
 	modelFiltered := false
+	allowedAccountIDs := []string(nil)
+	if s.models != nil {
+		allowedAccountIDs, _ = s.models.AllowedAccountIDs(requestedModel)
+	}
 
 	for attempt := 0; ; attempt++ {
 		if c.Request.Context().Err() != nil {
@@ -860,6 +869,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 			PreferredID:     preferredAccountID,
 			StrictPreferred: strictAffinity,
 			ExcludeIDs:      excludedAccountIDs,
+			AllowedIDs:      allowedAccountIDs,
 		})
 		if !ok {
 			if strictAffinity {
@@ -1166,6 +1176,10 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	requestedModel := strings.TrimSpace(codexRequest.Model)
 	modelFiltered := false
 	streamResponseStarted := false
+	allowedAccountIDs := []string(nil)
+	if s.models != nil {
+		allowedAccountIDs, _ = s.models.AllowedAccountIDs(requestedModel)
+	}
 
 	for attempt := 0; ; attempt++ {
 		if c.Request.Context().Err() != nil {
@@ -1175,6 +1189,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 			PreferredID:     preferredAccountID,
 			StrictPreferred: strictAffinity,
 			ExcludeIDs:      excludedAccountIDs,
+			AllowedIDs:      allowedAccountIDs,
 		})
 		if !ok {
 			if strictAffinity {
@@ -2339,6 +2354,73 @@ func (s *Server) handleAdminDeleteModelMapping(c *gin.Context) {
 		return
 	}
 	if err := s.models.DeleteModelMapping(c.Param("id")); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+func (s *Server) handleAdminListModelWhitelists(c *gin.Context) {
+	if !s.requireDashboardSession(c) {
+		return
+	}
+	c.JSON(http.StatusOK, s.models.ListModelWhitelists())
+}
+
+func (s *Server) handleAdminUpsertModelWhitelist(c *gin.Context) {
+	if !s.requireDashboardSession(c) {
+		return
+	}
+	var payload struct {
+		RecordID   string   `json:"recordId"`
+		ModelName  string   `json:"modelName"`
+		AccountIDs []string `json:"accountIds"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	record, err := s.models.UpsertModelWhitelist(models.ModelWhitelistInput{
+		RecordID:   payload.RecordID,
+		ModelName:  payload.ModelName,
+		AccountIDs: payload.AccountIDs,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "whitelist": record})
+}
+
+func (s *Server) handleAdminUpdateModelWhitelist(c *gin.Context) {
+	if !s.requireDashboardSession(c) {
+		return
+	}
+	var payload struct {
+		ModelName  string   `json:"modelName"`
+		AccountIDs []string `json:"accountIds"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	record, err := s.models.UpsertModelWhitelist(models.ModelWhitelistInput{
+		RecordID:   c.Param("id"),
+		ModelName:  payload.ModelName,
+		AccountIDs: payload.AccountIDs,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "whitelist": record})
+}
+
+func (s *Server) handleAdminDeleteModelWhitelist(c *gin.Context) {
+	if !s.requireDashboardSession(c) {
+		return
+	}
+	if err := s.models.DeleteModelWhitelist(c.Param("id")); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}

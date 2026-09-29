@@ -1,13 +1,16 @@
 import { useRawRequest } from '@/hooks/useRawRequest';
 import {
   deleteModelMapping,
+  deleteModelWhitelist,
   listAccounts,
   listCustomAccountModels,
   listModelMappings,
   listModelReasoningDefaults,
+  listModelWhitelists,
   refreshAccountModels,
   upsertModelMapping,
   upsertModelReasoningDefault,
+  upsertModelWhitelist,
 } from '@/services/api';
 import {
   displayAccount,
@@ -47,10 +50,14 @@ import React, { useMemo, useRef, useState } from 'react';
 const ModelsPage: React.FC = () => {
   const catalogActionRef = useRef<ActionType>();
   const mappingActionRef = useRef<ActionType>();
+  const whitelistActionRef = useRef<ActionType>();
   const reasoningDefaultActionRef = useRef<ActionType>();
   const [activeTab, setActiveTab] = useState('catalog');
   const [mappingOpen, setMappingOpen] = useState(false);
   const [editingMapping, setEditingMapping] = useState<Prism.ModelMapping>();
+  const [whitelistOpen, setWhitelistOpen] = useState(false);
+  const [editingWhitelist, setEditingWhitelist] =
+    useState<Prism.ModelWhitelist>();
   const [reasoningDefaultOpen, setReasoningDefaultOpen] = useState(false);
   const [editingReasoningDefault, setEditingReasoningDefault] =
     useState<Prism.ModelReasoningDefault>();
@@ -87,6 +94,14 @@ const ModelsPage: React.FC = () => {
       })) || [],
     [accountsReq.data],
   );
+
+  const accountOptionMap = useMemo(
+    () => new Map(accountOptions.map((option) => [option.value, option.label])),
+    [accountOptions],
+  );
+
+  const whitelistAccountLabel = (accountId: string) =>
+    accountOptionMap.get(accountId) || `${accountId.slice(0, 8)} (账号不存在)`;
 
   const catalogColumns: ProColumns<Prism.CustomAccountModelRecord>[] = [
     {
@@ -305,6 +320,71 @@ const ModelsPage: React.FC = () => {
     },
   ];
 
+  const whitelistColumns: ProColumns<Prism.ModelWhitelist>[] = [
+    {
+      title: '模型',
+      dataIndex: 'model_name',
+      width: 280,
+      render: (_, record) => (
+        <Typography.Text strong copyable>
+          {record.model_name}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: '允许账号',
+      dataIndex: 'account_ids',
+      render: (_, record) => (
+        <Space size={[4, 4]} wrap>
+          {record.account_ids.map((accountId) => (
+            <Tag key={accountId} color="blue">
+              {whitelistAccountLabel(accountId)}
+            </Tag>
+          ))}
+        </Space>
+      ),
+    },
+    {
+      title: '更新时间',
+      dataIndex: 'updated_at',
+      width: 180,
+      render: (_, record) => formatDateTime(record.updated_at),
+    },
+    {
+      title: '操作',
+      valueType: 'option',
+      width: 140,
+      render: (_, record) => (
+        <Space>
+          <Button
+            size="small"
+            title="编辑模型白名单"
+            icon={<EditOutlined />}
+            onClick={() => {
+              setEditingWhitelist(record);
+              setWhitelistOpen(true);
+            }}
+          />
+          <Popconfirm
+            title="删除模型白名单"
+            onConfirm={async () => {
+              await deleteModelWhitelist(record.record_id);
+              message.success('模型白名单已删除');
+              whitelistActionRef.current?.reload();
+            }}
+          >
+            <Button
+              danger
+              size="small"
+              title="删除模型白名单"
+              icon={<DeleteOutlined />}
+            />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
   const loadAccountModels = async (accountId: string) => {
     await refreshAccountModels(accountId);
     message.success('账号模型已同步');
@@ -422,6 +502,38 @@ const ModelsPage: React.FC = () => {
             ),
           },
           {
+            key: 'whitelist',
+            label: '模型白名单',
+            children: (
+              <ProTable<Prism.ModelWhitelist>
+                actionRef={whitelistActionRef}
+                rowKey="record_id"
+                headerTitle="模型白名单"
+                columns={whitelistColumns}
+                search={false}
+                options={false}
+                toolBarRender={() => [
+                  <Button
+                    key="whitelist"
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => {
+                      setEditingWhitelist(undefined);
+                      setWhitelistOpen(true);
+                    }}
+                  >
+                    新增白名单
+                  </Button>,
+                ]}
+                request={async () => {
+                  const data = await listModelWhitelists();
+                  return { data, success: true, total: data.length };
+                }}
+                pagination={{ pageSize: 10 }}
+              />
+            ),
+          },
+          {
             key: 'reasoning-default',
             label: '默认思考强度',
             children: (
@@ -472,6 +584,55 @@ const ModelsPage: React.FC = () => {
           },
         ]}
       />
+
+      <ModalForm
+        title={editingWhitelist ? '编辑模型白名单' : '新增模型白名单'}
+        open={whitelistOpen}
+        modalProps={{
+          destroyOnClose: true,
+          onCancel: () => {
+            setWhitelistOpen(false);
+            setEditingWhitelist(undefined);
+          },
+        }}
+        initialValues={
+          editingWhitelist
+            ? {
+                modelName: editingWhitelist.model_name,
+                accountIds: editingWhitelist.account_ids,
+              }
+            : undefined
+        }
+        onFinish={async (values) => {
+          await upsertModelWhitelist({
+            recordId: editingWhitelist?.record_id,
+            modelName: values.modelName,
+            accountIds: values.accountIds || [],
+          });
+          message.success('模型白名单已保存');
+          setWhitelistOpen(false);
+          setEditingWhitelist(undefined);
+          whitelistActionRef.current?.reload();
+          return true;
+        }}
+      >
+        <ProFormText
+          name="modelName"
+          label="模型 ID"
+          disabled={!!editingWhitelist}
+          rules={[{ required: true, message: '请输入模型 ID' }]}
+          extra="按请求中的模型 ID 匹配。"
+        />
+        <ProFormSelect
+          name="accountIds"
+          label="允许账号"
+          mode="multiple"
+          showSearch
+          options={accountOptions}
+          rules={[{ required: true, message: '至少选择一个账号' }]}
+          extra="配置后，该模型只会路由到这里选择的账号。"
+        />
+      </ModalForm>
 
       <ModalForm
         title={editingMapping ? '编辑模型映射' : '新增模型映射'}

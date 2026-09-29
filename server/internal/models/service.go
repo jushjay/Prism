@@ -81,6 +81,20 @@ type ModelMappingInput struct {
 	AccountID       string
 }
 
+type ModelWhitelistRecord struct {
+	RecordID   string    `json:"record_id"`
+	ModelName  string    `json:"model_name"`
+	AccountIDs []string  `json:"account_ids"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type ModelWhitelistInput struct {
+	RecordID   string
+	ModelName  string
+	AccountIDs []string
+}
+
 type ResolvedMapping struct {
 	TargetModel            string
 	ReasoningEffort        string
@@ -102,6 +116,10 @@ type ModelReasoningDefaultRecord struct {
 
 type mappingsState struct {
 	Items []ModelMappingRecord `json:"items"`
+}
+
+type whitelistsState struct {
+	Items []ModelWhitelistRecord `json:"items"`
 }
 
 type reasoningDefaultsState struct {
@@ -134,6 +152,7 @@ type Service struct {
 	caches            map[string]AccountCatalogCache
 	manual            []ManualModelRecord
 	mappings          []ModelMappingRecord
+	whitelists        []ModelWhitelistRecord
 	reasoningDefaults map[string]string
 	cacheTTL          time.Duration
 
@@ -162,6 +181,7 @@ func NewService(
 		caches:            map[string]AccountCatalogCache{},
 		manual:            nil,
 		mappings:          nil,
+		whitelists:        nil,
 		reasoningDefaults: map[string]string{},
 		cacheTTL:          24 * time.Hour,
 		accounts:          accounts,
@@ -191,6 +211,12 @@ func (s *Service) load() error {
 	if err := s.store.Load(s.cfg.Storage.ModelMappingsFile, &mappings); err != nil {
 		return err
 	}
+	var whitelists whitelistsState
+	if path := strings.TrimSpace(s.cfg.Storage.ModelWhitelistsFile); path != "" {
+		if err := s.store.Load(path, &whitelists); err != nil {
+			return err
+		}
+	}
 	var reasoningDefaults reasoningDefaultsState
 	if path := strings.TrimSpace(s.cfg.Storage.ModelReasoningDefaultsFile); path != "" {
 		if err := s.store.Load(path, &reasoningDefaults); err != nil {
@@ -211,6 +237,7 @@ func (s *Service) load() error {
 	}
 	s.manual = manual.Models
 	s.mappings = mappings.Items
+	s.whitelists = whitelists.Items
 	s.reasoningDefaults = map[string]string{}
 	for modelID, effort := range reasoningDefaults.Items {
 		modelID = strings.TrimSpace(modelID)
@@ -472,6 +499,150 @@ func (s *Service) UpsertModelMapping(input ModelMappingInput) (ModelMappingRecor
 
 	s.mappings = append(s.mappings, record)
 	return record, s.persistMappingsLocked()
+}
+
+func (s *Service) UpsertModelWhitelist(input ModelWhitelistInput) (ModelWhitelistRecord, error) {
+	recordID := strings.TrimSpace(input.RecordID)
+	modelName := strings.TrimSpace(input.ModelName)
+	if modelName == "" {
+		return ModelWhitelistRecord{}, errors.New("model name is required")
+	}
+
+	accountIDs := make([]string, 0, len(input.AccountIDs))
+	seen := make(map[string]struct{}, len(input.AccountIDs))
+	for _, rawID := range input.AccountIDs {
+		accountID := strings.TrimSpace(rawID)
+		if accountID == "" {
+			continue
+		}
+		if _, exists := seen[accountID]; exists {
+			continue
+		}
+		seen[accountID] = struct{}{}
+		accountIDs = append(accountIDs, accountID)
+	}
+	if len(accountIDs) == 0 {
+		return ModelWhitelistRecord{}, errors.New("at least one account is required")
+	}
+	if strings.TrimSpace(s.cfg.Storage.ModelWhitelistsFile) == "" {
+		return ModelWhitelistRecord{}, errors.New("model whitelists storage path is not configured")
+	}
+	if s.accounts == nil {
+		return ModelWhitelistRecord{}, errors.New("account pool is not configured")
+	}
+	for _, accountID := range accountIDs {
+		if _, ok := s.accounts.Get(accountID); !ok {
+			return ModelWhitelistRecord{}, errors.New("account not found: " + accountID)
+		}
+	}
+
+	now := time.Now().UTC()
+	record := ModelWhitelistRecord{
+		RecordID:   recordID,
+		ModelName:  modelName,
+		AccountIDs: accountIDs,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if record.RecordID != "" {
+		targetIndex := -1
+		for idx, existing := range s.whitelists {
+			if existing.RecordID != record.RecordID {
+				continue
+			}
+			targetIndex = idx
+			record.CreatedAt = existing.CreatedAt
+			break
+		}
+		if targetIndex < 0 {
+			return ModelWhitelistRecord{}, errors.New("whitelist not found")
+		}
+		for idx, existing := range s.whitelists {
+			if idx != targetIndex && existing.ModelName == record.ModelName {
+				return ModelWhitelistRecord{}, errors.New("whitelist already exists for the same model")
+			}
+		}
+		s.whitelists[targetIndex] = record
+		return record, s.persistWhitelistsLocked()
+	}
+
+	for idx, existing := range s.whitelists {
+		if existing.ModelName != record.ModelName {
+			continue
+		}
+		record.RecordID = existing.RecordID
+		record.CreatedAt = existing.CreatedAt
+		s.whitelists[idx] = record
+		return record, s.persistWhitelistsLocked()
+	}
+
+	record.RecordID = uuid.NewString()
+	s.whitelists = append(s.whitelists, record)
+	return record, s.persistWhitelistsLocked()
+}
+
+func (s *Service) DeleteModelWhitelist(recordID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	filtered := s.whitelists[:0]
+	found := false
+	for _, item := range s.whitelists {
+		if item.RecordID == strings.TrimSpace(recordID) {
+			found = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if !found {
+		return errors.New("whitelist not found")
+	}
+	s.whitelists = filtered
+	return s.persistWhitelistsLocked()
+}
+
+func (s *Service) ListModelWhitelists() []ModelWhitelistRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ModelWhitelistRecord, 0, len(s.whitelists))
+	for _, item := range s.whitelists {
+		item.AccountIDs = slices.Clone(item.AccountIDs)
+		if item.AccountIDs == nil {
+			item.AccountIDs = []string{}
+		}
+		out = append(out, item)
+	}
+	slices.SortFunc(out, func(a, b ModelWhitelistRecord) int {
+		if cmp := strings.Compare(a.ModelName, b.ModelName); cmp != 0 {
+			return cmp
+		}
+		return strings.Compare(a.RecordID, b.RecordID)
+	})
+	return out
+}
+
+// AllowedAccountIDs returns the configured account set for a model. The bool
+// distinguishes an unrestricted model from a configured whitelist.
+func (s *Service) AllowedAccountIDs(modelID string) ([]string, bool) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, item := range s.whitelists {
+		if item.ModelName != modelID {
+			continue
+		}
+		accountIDs := slices.Clone(item.AccountIDs)
+		if accountIDs == nil {
+			accountIDs = []string{}
+		}
+		return accountIDs, true
+	}
+	return nil, false
 }
 
 func (s *Service) DeleteModelMapping(recordID string) error {
@@ -865,6 +1036,14 @@ func (s *Service) persistManualLocked() error {
 
 func (s *Service) persistMappingsLocked() error {
 	return s.store.Save(s.cfg.Storage.ModelMappingsFile, mappingsState{Items: s.mappings})
+}
+
+func (s *Service) persistWhitelistsLocked() error {
+	path := strings.TrimSpace(s.cfg.Storage.ModelWhitelistsFile)
+	if path == "" {
+		return errors.New("model whitelists storage path is not configured")
+	}
+	return s.store.Save(path, whitelistsState{Items: s.whitelists})
 }
 
 func (s *Service) persistReasoningDefaultsLocked() error {
