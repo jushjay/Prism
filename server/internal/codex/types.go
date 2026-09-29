@@ -18,7 +18,6 @@ type ResponsesRequest struct {
 	Metadata             map[string]any `json:"metadata,omitempty"`
 	StreamOptions        map[string]any `json:"stream_options,omitempty"`
 	ServiceTier          string         `json:"service_tier,omitempty"`
-	TurnState            string         `json:"turnState,omitempty"`
 	ForceInstructions    bool           `json:"-"`
 }
 
@@ -59,14 +58,6 @@ type InputItem struct {
 	Output           any    `json:"output,omitempty"`
 }
 
-type ResponsesResponse struct {
-	ID     string `json:"id,omitempty"`
-	Object string `json:"object,omitempty"`
-	Model  string `json:"model,omitempty"`
-	Output []any  `json:"output,omitempty"`
-	Usage  *Usage `json:"usage,omitempty"`
-}
-
 type Usage struct {
 	InputTokens         int `json:"input_tokens"`
 	OutputTokens        int `json:"output_tokens"`
@@ -76,25 +67,6 @@ type Usage struct {
 	InputDetailsCached  int `json:"-"`
 	PromptDetailsCached int `json:"-"`
 	CompletionReasoning int `json:"-"`
-}
-
-type UsageRateWindow struct {
-	UsedPercent        float64 `json:"used_percent"`
-	LimitWindowSeconds int     `json:"limit_window_seconds"`
-	ResetAfterSeconds  int     `json:"reset_after_seconds"`
-	ResetAt            int64   `json:"reset_at"`
-}
-
-type UsageRateLimit struct {
-	Allowed         bool             `json:"allowed"`
-	LimitReached    bool             `json:"limit_reached"`
-	PrimaryWindow   *UsageRateWindow `json:"primary_window"`
-	SecondaryWindow *UsageRateWindow `json:"secondary_window"`
-}
-
-type UsageResponse struct {
-	PlanType  string         `json:"plan_type"`
-	RateLimit UsageRateLimit `json:"rate_limit"`
 }
 
 type SSEEvent struct {
