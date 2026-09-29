@@ -3,9 +3,10 @@ package app
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"net/url"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,9 +14,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jushjay/prism/internal/auth"
+	"github.com/jushjay/prism/internal/codex"
 	"github.com/jushjay/prism/internal/config"
-	"github.com/jushjay/prism/internal/security"
 )
 
 const auditLogMaxBytes int64 = 100 * 1024 * 1024
@@ -33,9 +33,7 @@ type cursorAuditEntry struct {
 	URI              string   `json:"uri"`
 	Host             string   `json:"host"`
 	UserAgent        string   `json:"user_agent"`
-	RemoteAddr       string   `json:"remote_addr"`
 	ClientIP         string   `json:"client_ip"`
-	ClientIPFrom     string   `json:"client_ip_source"`
 	RequestModel     string   `json:"request_model,omitempty"`
 	RequestStream    bool     `json:"request_stream"`
 	MessageCount     int      `json:"message_count,omitempty"`
@@ -47,21 +45,14 @@ type cursorAuditEntry struct {
 
 type upstreamAuditEntry struct {
 	Time             string            `json:"time"`
-	UpstreamType     string            `json:"upstream_type"`
 	SourceMethod     string            `json:"source_method"`
 	SourceURI        string            `json:"source_uri"`
 	SourceUserAgent  string            `json:"source_user_agent"`
 	SourceClientIP   string            `json:"source_client_ip"`
-	AccountID        string            `json:"account_id"`
-	AccountLabel     string            `json:"account_label,omitempty"`
-	AccountProvider  string            `json:"account_provider"`
 	TargetURL        string            `json:"target_url"`
-	TargetHost       string            `json:"target_host"`
-	TargetPath       string            `json:"target_path"`
-	EndpointStyle    string            `json:"endpoint_style"`
 	RequestModel     string            `json:"request_model,omitempty"`
+	ReasoningEffort  string            `json:"reasoning_effort,omitempty"`
 	RequestStream    bool              `json:"request_stream"`
-	MessageCount     int               `json:"message_count,omitempty"`
 	InputCount       int               `json:"input_count,omitempty"`
 	RequestToolCount int               `json:"request_tool_count,omitempty"`
 	RequestToolNames []string          `json:"request_tool_names,omitempty"`
@@ -72,39 +63,6 @@ type upstreamAuditEntry struct {
 	ResponseBody     string            `json:"response_body,omitempty"`
 	DurationMs       int64             `json:"duration_ms"`
 	Error            string            `json:"error,omitempty"`
-}
-
-type toolTraceCall struct {
-	ID             string `json:"id,omitempty"`
-	Name           string `json:"name,omitempty"`
-	ArgumentsBytes int    `json:"arguments_bytes,omitempty"`
-}
-
-type toolTraceSummary struct {
-	EventTypeCounts     map[string]int  `json:"event_type_counts,omitempty"`
-	UpstreamToolCalls   []toolTraceCall `json:"upstream_tool_calls,omitempty"`
-	DownstreamToolCalls []toolTraceCall `json:"downstream_tool_calls,omitempty"`
-	FinishReasons       []string        `json:"finish_reasons,omitempty"`
-	ResponseID          string          `json:"response_id,omitempty"`
-}
-
-type toolTraceAuditEntry struct {
-	Time            string           `json:"time"`
-	EntryType       string           `json:"entry_type"`
-	Phase           string           `json:"phase"`
-	UpstreamType    string           `json:"upstream_type"`
-	SourceURI       string           `json:"source_uri"`
-	SourceUserAgent string           `json:"source_user_agent"`
-	SourceClientIP  string           `json:"source_client_ip"`
-	AccountID       string           `json:"account_id"`
-	AccountLabel    string           `json:"account_label,omitempty"`
-	AccountProvider string           `json:"account_provider"`
-	EndpointStyle   string           `json:"endpoint_style"`
-	RequestedModel  string           `json:"requested_model"`
-	RoutedModel     string           `json:"routed_model"`
-	StreamEndReason string           `json:"stream_end_reason,omitempty"`
-	Error           string           `json:"error,omitempty"`
-	Summary         toolTraceSummary `json:"summary"`
 }
 
 type requestAuditSummary struct {
@@ -277,9 +235,8 @@ func gzipAuditLog(path string) error {
 }
 
 type auditManager struct {
-	cursor *auditFileLogger
-	openai *auditFileLogger
-	custom *auditFileLogger
+	cursor   *auditFileLogger
+	upstream *auditFileLogger
 }
 
 func newAuditManager(cfg config.AuditConfig) (*auditManager, error) {
@@ -287,42 +244,39 @@ func newAuditManager(cfg config.AuditConfig) (*auditManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	openai, err := newAuditFileLogger(cfg.OpenAIEgressLogEnabled, cfg.OpenAIEgressLogFile)
+	upstream, err := newAuditFileLogger(cfg.UpstreamLogEnabled, cfg.UpstreamLogFile)
 	if err != nil {
 		_ = cursor.Close()
 		return nil, err
 	}
-	custom, err := newAuditFileLogger(cfg.CustomEgressLogEnabled, cfg.CustomEgressLogFile)
-	if err != nil {
-		_ = cursor.Close()
-		_ = openai.Close()
-		return nil, err
-	}
-	return &auditManager{
-		cursor: cursor,
-		openai: openai,
-		custom: custom,
-	}, nil
+	return &auditManager{cursor: cursor, upstream: upstream}, nil
 }
 
 func (m *auditManager) Close() error {
 	if m == nil {
 		return nil
 	}
-	if err := m.cursor.Close(); err != nil {
-		return err
+	return errors.Join(m.cursor.Close(), m.upstream.Close())
+}
+
+func (s *Server) auditCursorRequest(c *gin.Context, body []byte) {
+	if s == nil || s.audit == nil {
+		return
 	}
-	if err := m.openai.Close(); err != nil {
-		return err
+	s.audit.LogCursorRequest(c, body)
+}
+
+func (s *Server) auditUpstream(c *gin.Context, requestBody []byte, requestHeaders http.Header, resp *http.Response, err error, duration time.Duration) {
+	if s == nil || s.audit == nil {
+		return
 	}
-	return m.custom.Close()
+	s.audit.LogUpstream(c, s.upstream.ResponsesURL(), requestBody, requestHeaders, resp, err, duration)
 }
 
 func (m *auditManager) LogCursorRequest(c *gin.Context, body []byte) {
 	if m == nil || m.cursor == nil || !isCursorUserAgent(c.Request.UserAgent()) {
 		return
 	}
-	info := security.InspectClientIP(c.Request.Header, c.Request.RemoteAddr)
 	summary := summarizeAuditRequestBody(body)
 	m.cursor.log(cursorAuditEntry{
 		Time:             time.Now().Format(time.RFC3339),
@@ -330,9 +284,7 @@ func (m *auditManager) LogCursorRequest(c *gin.Context, body []byte) {
 		URI:              c.Request.URL.RequestURI(),
 		Host:             c.Request.Host,
 		UserAgent:        c.Request.UserAgent(),
-		RemoteAddr:       info.RemoteIP,
-		ClientIP:         info.ClientIP,
-		ClientIPFrom:     info.Source,
+		ClientIP:         clientIP(c.Request),
 		RequestModel:     summary.Model,
 		RequestStream:    summary.Stream,
 		MessageCount:     summary.Messages,
@@ -343,101 +295,73 @@ func (m *auditManager) LogCursorRequest(c *gin.Context, body []byte) {
 	})
 }
 
-func (m *auditManager) LogOpenAIEgress(c *gin.Context, account auth.Account, targetURL, endpointStyle string, requestBody []byte, requestHeaders map[string]string, responseStatus int, responseHeaders map[string]string, responseBody string, duration time.Duration, err error) {
-	m.logUpstreamEgress(m.openai, "openai", c, account, targetURL, endpointStyle, requestBody, requestHeaders, responseStatus, responseHeaders, responseBody, duration, err)
-}
-
-func (m *auditManager) LogCustomEgress(c *gin.Context, account auth.Account, targetURL, endpointStyle string, requestBody []byte, requestHeaders map[string]string, responseStatus int, responseHeaders map[string]string, responseBody string, duration time.Duration, err error) {
-	m.logUpstreamEgress(m.custom, "custom", c, account, targetURL, endpointStyle, requestBody, requestHeaders, responseStatus, responseHeaders, responseBody, duration, err)
-}
-
-func (m *auditManager) LogToolTrace(c *gin.Context, account auth.Account, phase, requestedModel, routedModel, endpointStyle, streamEndReason, errMessage string, summary toolTraceSummary) {
-	if m == nil || c == nil {
+func (m *auditManager) LogUpstream(c *gin.Context, targetURL string, requestBody []byte, requestHeaders http.Header, resp *http.Response, err error, duration time.Duration) {
+	if m == nil || m.upstream == nil || c == nil {
 		return
 	}
-	logger := m.openai
-	upstreamType := "openai"
-	if account.Provider == auth.ProviderCustom {
-		logger = m.custom
-		upstreamType = "custom"
-	}
-	if logger == nil {
-		return
-	}
-	info := security.InspectClientIP(c.Request.Header, c.Request.RemoteAddr)
-	entry := toolTraceAuditEntry{
-		Time:            time.Now().Format(time.RFC3339),
-		EntryType:       "tool_trace",
-		Phase:           phase,
-		UpstreamType:    upstreamType,
-		SourceURI:       c.Request.URL.RequestURI(),
-		SourceUserAgent: c.Request.UserAgent(),
-		SourceClientIP:  info.ClientIP,
-		AccountID:       account.ID,
-		AccountLabel:    account.Label,
-		AccountProvider: string(account.Provider),
-		EndpointStyle:   endpointStyle,
-		RequestedModel:  requestedModel,
-		RoutedModel:     routedModel,
-		StreamEndReason: streamEndReason,
-		Error:           errMessage,
-		Summary:         summary,
-	}
-	if entry.AccountLabel == "" {
-		entry.AccountLabel = account.Email
-	}
-	logger.log(entry)
-}
-
-func (m *auditManager) logUpstreamEgress(logger *auditFileLogger, upstreamType string, c *gin.Context, account auth.Account, targetURL, endpointStyle string, requestBody []byte, requestHeaders map[string]string, responseStatus int, responseHeaders map[string]string, responseBody string, duration time.Duration, err error) {
-	if m == nil || logger == nil || c == nil {
-		return
-	}
-	info := security.InspectClientIP(c.Request.Header, c.Request.RemoteAddr)
 	entry := upstreamAuditEntry{
 		Time:            time.Now().Format(time.RFC3339),
-		UpstreamType:    upstreamType,
 		SourceMethod:    c.Request.Method,
 		SourceURI:       c.Request.URL.RequestURI(),
 		SourceUserAgent: c.Request.UserAgent(),
-		SourceClientIP:  info.ClientIP,
-		AccountID:       account.ID,
-		AccountLabel:    account.Label,
-		AccountProvider: string(account.Provider),
+		SourceClientIP:  clientIP(c.Request),
 		TargetURL:       targetURL,
-		EndpointStyle:   endpointStyle,
 		RequestBody:     string(requestBody),
-		RequestHeaders:  requestHeaders,
-		ResponseStatus:  responseStatus,
-		ResponseHeaders: responseHeaders,
-		ResponseBody:    responseBody,
+		RequestHeaders:  auditHeaders(requestHeaders),
 		DurationMs:      duration.Milliseconds(),
 	}
-	if entry.AccountLabel == "" {
-		entry.AccountLabel = account.Email
+	if resp != nil {
+		entry.ResponseStatus = resp.StatusCode
+		entry.ResponseHeaders = auditHeaders(resp.Header)
 	}
-	if parsed, err := filepathToURLParts(targetURL); err == nil {
-		entry.TargetHost = parsed.Host
-		entry.TargetPath = parsed.Path
-	}
-	var requestPayload map[string]any
-	if err := json.Unmarshal(requestBody, &requestPayload); err == nil {
-		if model, _ := requestPayload["model"].(string); model != "" {
-			entry.RequestModel = model
-		}
-		if stream, ok := requestPayload["stream"].(bool); ok {
-			entry.RequestStream = stream
-		}
-		summary := summarizeAuditRequestPayload(requestPayload)
-		entry.MessageCount = summary.Messages
-		entry.InputCount = summary.Input
-		entry.RequestToolCount = len(summary.ToolNames)
-		entry.RequestToolNames = summary.ToolNames
+	var upstreamErr *codex.UpstreamError
+	if errors.As(err, &upstreamErr) {
+		entry.ResponseStatus = upstreamErr.StatusCode
+		entry.ResponseHeaders = auditHeaders(upstreamErr.Header)
+		entry.ResponseBody = upstreamErr.Body
 	}
 	if err != nil {
 		entry.Error = err.Error()
 	}
-	logger.log(entry)
+	var requestPayload map[string]any
+	if json.Unmarshal(requestBody, &requestPayload) == nil {
+		summary := summarizeAuditRequestPayload(requestPayload)
+		entry.RequestModel = summary.Model
+		entry.RequestStream = summary.Stream
+		entry.InputCount = summary.Input
+		entry.RequestToolCount = len(summary.ToolNames)
+		entry.RequestToolNames = summary.ToolNames
+		if reasoning, ok := requestPayload["reasoning"].(map[string]any); ok {
+			entry.ReasoningEffort, _ = reasoning["effort"].(string)
+		}
+	}
+	m.upstream.log(entry)
+}
+
+var redactedAuditHeaders = map[string]struct{}{
+	"authorization": {},
+	"x-api-key":     {},
+	"api-key":       {},
+	"cookie":        {},
+	"set-cookie":    {},
+}
+
+func auditHeaders(header http.Header) map[string]string {
+	if len(header) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(header))
+	for key, values := range header {
+		if len(values) == 0 {
+			continue
+		}
+		if _, redact := redactedAuditHeaders[strings.ToLower(key)]; redact {
+			out[key] = "[redacted]"
+			continue
+		}
+		out[key] = strings.Join(values, ", ")
+	}
+	return out
 }
 
 func summarizeAuditRequestBody(body []byte) requestAuditSummary {
@@ -489,17 +413,4 @@ func summarizeAuditToolNames(tools []any) []string {
 		}
 	}
 	return names
-}
-
-type parsedURLParts struct {
-	Host string
-	Path string
-}
-
-func filepathToURLParts(raw string) (parsedURLParts, error) {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return parsedURLParts{}, err
-	}
-	return parsedURLParts{Host: parsed.Host, Path: parsed.Path}, nil
 }
