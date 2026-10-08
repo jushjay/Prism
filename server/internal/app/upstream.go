@@ -15,9 +15,9 @@ import (
 
 const errModelRequired = "model is required"
 
-// resolveUpstreamRequest rewrites configured model names and injects the
-// model's reasoning effort when the Cursor request did not carry one.
-func (s *Server) resolveUpstreamRequest(request codex.ResponsesRequest, hasExplicitReasoning bool) codex.ResponsesRequest {
+// resolveUpstreamRequest rewrites configured model names and applies the
+// model's configured reasoning effort, overriding any effort Cursor sent.
+func (s *Server) resolveUpstreamRequest(request codex.ResponsesRequest) codex.ResponsesRequest {
 	if strings.TrimSpace(request.PromptCacheKey) == "" {
 		request.PromptCacheKey = codex.StableConversationKey(request)
 	}
@@ -25,14 +25,11 @@ func (s *Server) resolveUpstreamRequest(request codex.ResponsesRequest, hasExpli
 	if resolution.TargetModel != "" {
 		request.Model = resolution.TargetModel
 	}
-	applyModelReasoningEffort(&request, resolution, hasExplicitReasoning)
+	applyModelReasoningEffort(&request, resolution)
 	return request
 }
 
-func applyModelReasoningEffort(request *codex.ResponsesRequest, resolution reasoning.Resolution, hasExplicitReasoning bool) {
-	if hasExplicitReasoning {
-		return
-	}
+func applyModelReasoningEffort(request *codex.ResponsesRequest, resolution reasoning.Resolution) {
 	effort := strings.TrimSpace(resolution.ReasoningEffort)
 	if effort == "" {
 		return

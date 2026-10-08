@@ -29,7 +29,7 @@ func (s *Server) handleCursorChatCompletions(c *gin.Context) {
 		return
 	}
 	c.Set(contextKeyClientStream, chatRequest.Stream)
-	upstreamRequest := s.resolveUpstreamRequest(chatRequest.CodexRequest, chatRequest.HasExplicitReasoning)
+	upstreamRequest := s.resolveUpstreamRequest(chatRequest.CodexRequest)
 	upstreamRequest = codex.PrepareRequest(upstreamRequest, chatRequest.Stream)
 	requestedModel := chatRequest.RequestedModel
 	if strings.TrimSpace(requestedModel) == "" {

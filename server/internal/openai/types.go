@@ -1,5 +1,7 @@
 package openai
 
+import "encoding/json"
+
 type ChatCompletionRequest struct {
 	Model              string          `json:"model"`
 	Messages           []ChatMessage   `json:"messages"`
@@ -17,6 +19,23 @@ type Reasoning struct {
 	Effort string `json:"effort,omitempty"`
 }
 
+// UnmarshalJSON accepts both {"effort":"high"} and the bare string form
+// "high" that Cursor sends for some models.
+func (r *Reasoning) UnmarshalJSON(data []byte) error {
+	var effort string
+	if err := json.Unmarshal(data, &effort); err == nil {
+		r.Effort = effort
+		return nil
+	}
+	type reasoningObject Reasoning
+	var object reasoningObject
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	*r = Reasoning(object)
+	return nil
+}
+
 type ChatMessage struct {
 	Role             string      `json:"role"`
 	Content          any         `json:"content"`
@@ -28,11 +47,13 @@ type ChatMessage struct {
 }
 
 type Tool struct {
-	Type        string         `json:"type"`
-	Name        string         `json:"name,omitempty"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"`
-	Function    ToolSpec       `json:"function"`
+	Type        string          `json:"type"`
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Parameters  map[string]any  `json:"parameters,omitempty"`
+	Format      map[string]any  `json:"format,omitempty"`
+	Function    ToolSpec        `json:"function"`
+	Custom      *CustomToolSpec `json:"custom,omitempty"`
 }
 
 type ToolSpec struct {
@@ -41,15 +62,27 @@ type ToolSpec struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
+type CustomToolSpec struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Format      map[string]any `json:"format,omitempty"`
+}
+
 type ToolCall struct {
-	ID       string     `json:"id"`
-	Type     string     `json:"type"`
-	Function ToolCallFn `json:"function"`
+	ID       string          `json:"id"`
+	Type     string          `json:"type"`
+	Function ToolCallFn      `json:"function"`
+	Custom   *CustomToolCall `json:"custom,omitempty"`
 }
 
 type ToolCallFn struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+}
+
+type CustomToolCall struct {
+	Name  string `json:"name"`
+	Input string `json:"input"`
 }
 
 type ResponseFormat struct {

@@ -18,8 +18,9 @@ Cursor / other clients --> nginx --> sidecar --> sub2api
 - **Non-Cursor requests** are reverse-proxied to sub2api untouched (body, headers, status, SSE and WebSocket).
 - **Cursor requests** (`User-Agent` contains `Cursor/` and the request is `POST /v1/chat/completions` or `POST /v1/responses`):
   1. The request is normalized (tool definitions, `function_call_output`, `call_id`, structured-output schemas).
-  2. Reasoning effort: an explicit `reasoning_effort` / `reasoning.effort` is kept. Otherwise the effort configured for that
-     model in `sidecar.yaml` is used (exactly one effort per model). Unlisted models are forwarded unchanged without an effort.
+  2. Reasoning effort: models listed in `sidecar.yaml` always use their configured effort (exactly one effort per model),
+     overriding any `reasoning_effort` / `reasoning` the request carries. Unlisted models keep the request's effort, if any,
+     and are forwarded unchanged.
      Requests without a `model` are rejected with 400.
   3. The request is converted to a Responses request and sent to sub2api `/v1/responses` (always `stream=true`, `store=false`).
   4. Upstream SSE is converted back into what Cursor expects: Chat Completions chunks (with `reasoning_content`, `tool_calls`, usage) or Responses events. Non-stream requests get an aggregated JSON body.

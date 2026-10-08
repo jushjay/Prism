@@ -11,16 +11,16 @@ import (
 )
 
 type TranslationResult struct {
-	Request                 codex.ResponsesRequest
-	TupleSchema             map[string]any
-	HasExplicitReasoning    bool
-	ExplicitReasoningEffort string
+	Request     codex.ResponsesRequest
+	TupleSchema map[string]any
 }
 
 func ToCodex(req ChatCompletionRequest) TranslationResult {
 	instructions := "You are a helpful assistant."
 	var systemParts []string
 	var input []codex.InputItem
+	customToolNames := customToolNameSet(req.Tools)
+	customCallIDs := map[string]struct{}{}
 	for _, message := range req.Messages {
 		switch message.Role {
 		case "system", "developer":
@@ -35,6 +35,11 @@ func ToCodex(req ChatCompletionRequest) TranslationResult {
 				})
 			}
 			for _, toolCall := range message.ToolCalls {
+				if item, ok := customToolCallItem(toolCall, customToolNames); ok {
+					customCallIDs[toolCall.ID] = struct{}{}
+					input = append(input, item)
+					continue
+				}
 				input = append(input, codex.InputItem{
 					Type:      "function_call",
 					CallID:    toolCall.ID,
@@ -51,8 +56,12 @@ func ToCodex(req ChatCompletionRequest) TranslationResult {
 				})
 			}
 		case "tool", "function":
+			outputType := "function_call_output"
+			if _, ok := customCallIDs[message.ToolCallID]; ok && message.ToolCallID != "" {
+				outputType = "custom_tool_call_output"
+			}
 			input = append(input, codex.InputItem{
-				Type:   "function_call_output",
+				Type:   outputType,
 				CallID: message.ToolCallID,
 				Output: extractText(message.Content),
 			})
@@ -88,6 +97,10 @@ func ToCodex(req ChatCompletionRequest) TranslationResult {
 	if len(req.Tools) > 0 {
 		tools := make([]codex.Tool, 0, len(req.Tools))
 		for _, tool := range req.Tools {
+			if isCustomTool(tool) {
+				tools = append(tools, customTool(tool))
+				continue
+			}
 			toolName := strings.TrimSpace(tool.Function.Name)
 			if toolName == "" {
 				toolName = strings.TrimSpace(tool.Name)
@@ -131,10 +144,8 @@ func ToCodex(req ChatCompletionRequest) TranslationResult {
 				request.Input = []codex.InputItem{{Role: "user", Content: ""}}
 			}
 			return TranslationResult{
-				Request:                 request,
-				TupleSchema:             tupleSchema,
-				HasExplicitReasoning:    explicitReasoning != "",
-				ExplicitReasoningEffort: explicitReasoning,
+				Request:     request,
+				TupleSchema: tupleSchema,
 			}
 		}
 		request.Text = &codex.TextConfig{Format: format}
@@ -143,11 +154,71 @@ func ToCodex(req ChatCompletionRequest) TranslationResult {
 		request.Input = []codex.InputItem{{Role: "user", Content: ""}}
 	}
 	return TranslationResult{
-		Request:                 request,
-		TupleSchema:             nil,
-		HasExplicitReasoning:    explicitReasoning != "",
-		ExplicitReasoningEffort: explicitReasoning,
+		Request:     request,
+		TupleSchema: nil,
 	}
+}
+
+func isCustomTool(tool Tool) bool {
+	return strings.TrimSpace(tool.Type) == "custom"
+}
+
+func customTool(tool Tool) codex.Tool {
+	name := strings.TrimSpace(tool.Name)
+	description := strings.TrimSpace(tool.Description)
+	format := tool.Format
+	if tool.Custom != nil {
+		if name == "" {
+			name = strings.TrimSpace(tool.Custom.Name)
+		}
+		if description == "" {
+			description = strings.TrimSpace(tool.Custom.Description)
+		}
+		if len(format) == 0 {
+			format = tool.Custom.Format
+		}
+	}
+	return codex.Tool{
+		Type:        "custom",
+		Name:        name,
+		Description: description,
+		Format:      format,
+	}
+}
+
+func customToolNameSet(tools []Tool) map[string]struct{} {
+	names := map[string]struct{}{}
+	for _, tool := range tools {
+		if !isCustomTool(tool) {
+			continue
+		}
+		if name := customTool(tool).Name; name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+// customToolCallItem maps an assistant tool call to a custom_tool_call input
+// item. Cursor may echo custom tool calls either in the OpenAI "custom" shape
+// or as a "function" call whose arguments hold the raw tool input.
+func customToolCallItem(toolCall ToolCall, customToolNames map[string]struct{}) (codex.InputItem, bool) {
+	if toolCall.Custom != nil || strings.TrimSpace(toolCall.Type) == "custom" {
+		name := strings.TrimSpace(toolCall.Function.Name)
+		inputText := toolCall.Function.Arguments
+		if toolCall.Custom != nil {
+			if customName := strings.TrimSpace(toolCall.Custom.Name); customName != "" {
+				name = customName
+			}
+			inputText = toolCall.Custom.Input
+		}
+		return codex.InputItem{Type: "custom_tool_call", CallID: toolCall.ID, Name: name, Input: inputText}, true
+	}
+	name := strings.TrimSpace(toolCall.Function.Name)
+	if _, ok := customToolNames[name]; !ok {
+		return codex.InputItem{}, false
+	}
+	return codex.InputItem{Type: "custom_tool_call", CallID: toolCall.ID, Name: name, Input: toolCall.Function.Arguments}, true
 }
 
 func extractText(content any) string {

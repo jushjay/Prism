@@ -1,5 +1,7 @@
 package codex
 
+import "encoding/json"
+
 type ResponsesRequest struct {
 	Model                string         `json:"model"`
 	User                 string         `json:"user,omitempty"`
@@ -24,6 +26,23 @@ type ResponsesRequest struct {
 type Reasoning struct {
 	Effort  string `json:"effort,omitempty"`
 	Summary string `json:"summary,omitempty"`
+}
+
+// UnmarshalJSON accepts both {"effort":"high"} and the bare string form
+// "high" that Cursor sends for some models.
+func (r *Reasoning) UnmarshalJSON(data []byte) error {
+	var effort string
+	if err := json.Unmarshal(data, &effort); err == nil {
+		r.Effort = effort
+		return nil
+	}
+	type reasoningObject Reasoning
+	var object reasoningObject
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	*r = Reasoning(object)
+	return nil
 }
 
 type TextConfig struct {

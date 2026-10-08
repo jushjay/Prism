@@ -325,7 +325,7 @@ func TestCursorRequestWithoutModelIsRejected(t *testing.T) {
 	}
 }
 
-func TestCursorChatKeepsExplicitReasoningEffort(t *testing.T) {
+func TestCursorChatConfiguredEffortOverridesRequestEffort(t *testing.T) {
 	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{
 		Models: map[string]reasoning.Model{
 			"gpt-5.4-high": {Target: "gpt-5.4", ReasoningEffort: "high"},
@@ -333,15 +333,69 @@ func TestCursorChatKeepsExplicitReasoningEffort(t *testing.T) {
 		},
 	})
 
-	for _, body := range []string{
-		`{"model":"gpt-5.4-high","reasoning_effort":"low","messages":[{"role":"user","content":"hi"}]}`,
-		`{"model":"gpt-5.4","reasoning":{"effort":"low"},"messages":[{"role":"user","content":"hi"}]}`,
+	for _, test := range []struct{ body, want string }{
+		{`{"model":"gpt-5.4-high","reasoning_effort":"low","messages":[{"role":"user","content":"hi"}]}`, "high"},
+		{`{"model":"gpt-5.4","reasoning":{"effort":"low"},"messages":[{"role":"user","content":"hi"}]}`, "xhigh"},
+		{`{"model":"gpt-5.4","reasoning":"low","messages":[{"role":"user","content":"hi"}]}`, "xhigh"},
+		{`{"model":"gpt-5.5","reasoning":"low","messages":[{"role":"user","content":"hi"}]}`, "low"},
 	} {
-		resp := postJSON(t, sidecar.URL+"/v1/chat/completions", cursorUA, body)
+		resp := postJSON(t, sidecar.URL+"/v1/chat/completions", cursorUA, test.body)
 		readBody(t, resp)
-		if effort := reasoningEffortOf(t, sub2api.lastJSON(t)); effort != "low" {
-			t.Fatalf("explicit effort overridden for %s: got %q", body, effort)
+		if effort := reasoningEffortOf(t, sub2api.lastJSON(t)); effort != test.want {
+			t.Fatalf("%s: got effort %q, want %q", test.body, effort, test.want)
 		}
+	}
+}
+
+func TestCursorChatAcceptsStringReasoningAndCustomTool(t *testing.T) {
+	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{
+		Models: map[string]reasoning.Model{"gpt-6-astra": {ReasoningEffort: "low"}},
+	})
+
+	resp := postJSON(t, sidecar.URL+"/v1/chat/completions", cursorUA, `{
+		"model": "gpt-6-astra",
+		"messages": [{"role":"user","content":[{"type":"text","text":"hi"}]}],
+		"stream": true,
+		"tools": [{"type":"custom","name":"ApplyPatch","description":"Edit files","format":{"type":"grammar","syntax":"lark","definition":"start: x"}}],
+		"user": "cursor-user",
+		"reasoning": "medium",
+		"stream_options": {"include_usage": true}
+	}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d %s", resp.StatusCode, body)
+	}
+	payload := sub2api.lastJSON(t)
+	if effort := reasoningEffortOf(t, payload); effort != "low" {
+		t.Fatalf("expected configured effort low to override request effort, got %q", effort)
+	}
+	tools, _ := payload["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 upstream tool, got %#v", payload["tools"])
+	}
+	tool := tools[0].(map[string]any)
+	format, _ := tool["format"].(map[string]any)
+	if tool["type"] != "custom" || tool["name"] != "ApplyPatch" || format["definition"] != "start: x" {
+		t.Fatalf("expected custom tool with grammar format upstream, got %#v", tool)
+	}
+	if _, ok := tool["function"]; ok {
+		t.Fatalf("custom tool must not carry a function block, got %#v", tool)
+	}
+	if _, ok := tool["parameters"]; ok {
+		t.Fatalf("custom tool must not carry parameters, got %#v", tool)
+	}
+}
+
+func TestCursorResponsesAcceptsStringReasoning(t *testing.T) {
+	sidecar, sub2api := newTestSidecar(t, completedTextStream, reasoning.FileConfig{})
+
+	resp := postJSON(t, sidecar.URL+"/v1/responses", cursorUA, `{"model":"gpt-6-astra","reasoning":"medium","input":[{"role":"user","content":"hi"}]}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d %s", resp.StatusCode, body)
+	}
+	if effort := reasoningEffortOf(t, sub2api.lastJSON(t)); effort != "medium" {
+		t.Fatalf("expected effort medium, got %q", effort)
 	}
 }
 

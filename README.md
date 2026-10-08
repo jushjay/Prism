@@ -18,7 +18,7 @@ Cursor / 其他客户端 --> nginx --> sidecar --> sub2api
 - **非 Cursor 请求**：原样反向代理到 sub2api（请求体、请求头、状态码、响应体、SSE、WebSocket 都不做修改）。
 - **Cursor 请求**（`User-Agent` 包含 `Cursor/`，且为 `POST /v1/chat/completions` 或 `POST /v1/responses`）：
   1. 规范化请求（工具定义、`function_call_output`、`call_id`、结构化输出 schema 等）。
-  2. 判定思考强度：请求里显式带了 `reasoning_effort` / `reasoning.effort` 就保留；否则使用 `sidecar.yaml` 中该模型配置的强度（每个模型一一对应）。未配置的模型不注入强度，模型名原样转发。
+  2. 判定思考强度：`sidecar.yaml` 中配置了的模型一律使用配置的强度（每个模型一一对应），覆盖请求里携带的 `reasoning_effort` / `reasoning`；未配置的模型保留请求自带的强度（如有），模型名原样转发。
      请求未带 `model` 时直接返回 400。
   3. 统一转换为 Responses 请求，发往 sub2api 的 `/v1/responses`（上游固定 `stream=true`、`store=false`）。
   4. 把上游 SSE 转回 Cursor 需要的格式：Chat Completions chunk（含 `reasoning_content`、`tool_calls`、usage）或 Responses 事件；非流式请求会聚合为完整 JSON。

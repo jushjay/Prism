@@ -291,3 +291,120 @@ func TestToCodexPreservesAssistantReasoningContent(t *testing.T) {
 		t.Fatalf("expected reasoning_content to be preserved, got %q", assistantItem.ReasoningContent)
 	}
 }
+
+func TestParseChatProxyRequestAcceptsCursorStringReasoningAndCustomTool(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-6-astra",
+		"messages": [
+			{"role":"system","content":"be helpful"},
+			{"role":"user","content":[{"type":"text","text":"hi"}]}
+		],
+		"stream": true,
+		"tools": [
+			{"type":"function","function":{"name":"Shell","description":"Run","parameters":{"type":"object"}}},
+			{
+				"type": "custom",
+				"name": "ApplyPatch",
+				"description": "Edit files",
+				"format": {"type":"grammar","syntax":"lark","definition":"start: begin_patch"}
+			}
+		],
+		"user": "cursor-user",
+		"reasoning": "medium",
+		"stream_options": {"include_usage": true}
+	}`)
+
+	proxyRequest, err := parseChatProxyRequest(body, "Cursor/1.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := proxyRequest.CodexRequest.Reasoning; got == nil || got.Effort != "medium" {
+		t.Fatalf("expected reasoning effort medium, got %#v", got)
+	}
+	tools := proxyRequest.CodexRequest.Tools
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	if tools[0].Type != "function" || tools[0].Name != "Shell" {
+		t.Fatalf("expected function tool Shell, got %#v", tools[0])
+	}
+	custom := tools[1]
+	if custom.Type != "custom" || custom.Name != "ApplyPatch" || custom.Description != "Edit files" {
+		t.Fatalf("expected custom tool ApplyPatch, got %#v", custom)
+	}
+	if custom.Format["type"] != "grammar" || custom.Format["definition"] != "start: begin_patch" {
+		t.Fatalf("expected custom tool format to be preserved, got %#v", custom.Format)
+	}
+	if custom.Function != nil || custom.Parameters != nil {
+		t.Fatalf("expected custom tool without function/parameters, got %#v", custom)
+	}
+}
+
+func TestParseChatCompletionRequestAcceptsObjectReasoning(t *testing.T) {
+	request, err := parseChatCompletionRequest([]byte(`{
+		"model": "gpt-5.4",
+		"messages": [{"role":"user","content":"hi"}],
+		"reasoning": {"effort": "high"}
+	}`), "Cursor/1.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if request.Reasoning == nil || request.Reasoning.Effort != "high" {
+		t.Fatalf("expected reasoning effort high, got %#v", request.Reasoning)
+	}
+}
+
+func TestToCodexMapsCustomToolCallHistory(t *testing.T) {
+	request, err := parseChatCompletionRequest([]byte(`{
+		"model": "gpt-6-astra",
+		"messages": [
+			{"role":"user","content":"edit"},
+			{"role":"assistant","content":null,"tool_calls":[
+				{"id":"call_fn","type":"function","function":{"name":"ApplyPatch","arguments":"*** Begin Patch\n*** End Patch\n"}},
+				{"id":"call_custom","type":"custom","custom":{"name":"ApplyPatch","input":"*** Begin Patch\n*** End Patch\n"}},
+				{"id":"call_shell","type":"function","function":{"name":"Shell","arguments":"{\"command\":\"ls\"}"}}
+			]},
+			{"role":"tool","tool_call_id":"call_fn","content":"patched"},
+			{"role":"tool","tool_call_id":"call_custom","content":"patched again"},
+			{"role":"tool","tool_call_id":"call_shell","content":"a.txt"}
+		],
+		"tools": [
+			{"type":"function","function":{"name":"Shell","parameters":{"type":"object"}}},
+			{"type":"custom","name":"ApplyPatch","format":{"type":"grammar"}}
+		]
+	}`), "Cursor/1.0")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	input := openai.ToCodex(request).Request.Input
+	if len(input) != 7 {
+		t.Fatalf("expected 7 input items, got %d: %#v", len(input), input)
+	}
+	expected := []struct {
+		itemType string
+		callID   string
+		name     string
+		input    string
+	}{
+		{"", "", "", ""},
+		{"custom_tool_call", "call_fn", "ApplyPatch", "*** Begin Patch\n*** End Patch\n"},
+		{"custom_tool_call", "call_custom", "ApplyPatch", "*** Begin Patch\n*** End Patch\n"},
+		{"function_call", "call_shell", "Shell", ""},
+		{"custom_tool_call_output", "call_fn", "", ""},
+		{"custom_tool_call_output", "call_custom", "", ""},
+		{"function_call_output", "call_shell", "", ""},
+	}
+	for i, want := range expected {
+		got := input[i]
+		if got.Type != want.itemType || got.CallID != want.callID || got.Name != want.name || got.Input != want.input {
+			t.Fatalf("input[%d] = %#v, want %+v", i, got, want)
+		}
+	}
+	if input[3].Arguments != `{"command":"ls"}` {
+		t.Fatalf("expected function call arguments to be preserved, got %q", input[3].Arguments)
+	}
+	if input[4].Output != "patched" {
+		t.Fatalf("expected custom tool output to be preserved, got %#v", input[4].Output)
+	}
+}

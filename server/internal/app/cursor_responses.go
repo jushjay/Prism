@@ -43,10 +43,9 @@ func (s *Server) handleCursorResponses(c *gin.Context) {
 		return
 	}
 	clientStream := request.Stream
-	hasExplicitReasoning := request.Reasoning != nil && strings.TrimSpace(request.Reasoning.Effort) != ""
 	c.Set(contextKeyClientStream, clientStream)
 
-	upstreamRequest := s.resolveUpstreamRequest(request, hasExplicitReasoning)
+	upstreamRequest := s.resolveUpstreamRequest(request)
 	upstreamRequest = codex.PrepareRequest(upstreamRequest, clientStream)
 	resp, ok := s.createUpstreamResponse(c, requestedModel, upstreamRequest)
 	if !ok {

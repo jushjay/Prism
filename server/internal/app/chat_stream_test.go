@@ -33,7 +33,6 @@ func TestApplyModelReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name           string
 		resolution     reasoning.Resolution
-		hasExplicit    bool
 		initialEffort  string
 		expectedEffort string
 	}{
@@ -43,11 +42,15 @@ func TestApplyModelReasoningEffort(t *testing.T) {
 			expectedEffort: "high",
 		},
 		{
-			name:           "explicit request wins",
-			hasExplicit:    true,
-			initialEffort:  "low",
-			resolution:     reasoning.Resolution{ReasoningEffort: "high"},
+			name:           "configured effort overrides request effort",
+			initialEffort:  "medium",
+			resolution:     reasoning.Resolution{ReasoningEffort: "low"},
 			expectedEffort: "low",
+		},
+		{
+			name:           "unlisted model keeps request effort",
+			initialEffort:  "medium",
+			expectedEffort: "medium",
 		},
 		{
 			name:           "unlisted model gets no effort",
@@ -61,7 +64,7 @@ func TestApplyModelReasoningEffort(t *testing.T) {
 			if test.initialEffort != "" {
 				request.Reasoning = &codex.Reasoning{Effort: test.initialEffort}
 			}
-			applyModelReasoningEffort(&request, test.resolution, test.hasExplicit)
+			applyModelReasoningEffort(&request, test.resolution)
 			got := ""
 			if request.Reasoning != nil {
 				got = request.Reasoning.Effort
