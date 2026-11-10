@@ -39,6 +39,7 @@ var validEfforts = map[string]struct{}{
 	"medium":  {},
 	"high":    {},
 	"xhigh":   {},
+	"max":     {},
 }
 
 func Load(path string, required bool) (*Resolver, error) {

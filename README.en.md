@@ -41,7 +41,7 @@ Cursor / other clients --> nginx --> sidecar (127.0.0.1:8090) --> sub2api (127.0
      gpt-5.4-high: { target: gpt-5.4, reasoning_effort: high }
    ```
 
-   Keys are the model names you add in Cursor; `target` is the real model sent to sub2api (defaults to the key); `reasoning_effort` is one of `none` / `minimal` / `low` / `medium` / `high` / `xhigh`.
+   Keys are the model names you add in Cursor; `target` is the real model sent to sub2api (defaults to the key); `reasoning_effort` is one of `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`.
 
    Run `systemctl restart sub2api-cursor-sidecar` after changes.
 

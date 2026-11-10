@@ -41,7 +41,7 @@ Cursor / 其他客户端 --> nginx --> sidecar (127.0.0.1:8090) --> sub2api (127
      gpt-5.4-high: { target: gpt-5.4, reasoning_effort: high }
    ```
 
-   key 是 Cursor 中添加的模型名；`target` 是发给 sub2api 的真实模型（省略时等于 key）；`reasoning_effort` 可选 `none` / `minimal` / `low` / `medium` / `high` / `xhigh`。
+   key 是 Cursor 中添加的模型名；`target` 是发给 sub2api 的真实模型（省略时等于 key）；`reasoning_effort` 可选 `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
 
    修改后执行 `systemctl restart sub2api-cursor-sidecar`。
 

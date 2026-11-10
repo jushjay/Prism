@@ -6,7 +6,7 @@
 # Each key is the model name Cursor sends (add it as a custom model in Cursor).
 # Every model has exactly one reasoning effort:
 #   target            upstream model sent to sub2api (optional, defaults to the key)
-#   reasoning_effort  required: none | minimal | low | medium | high | xhigh
+#   reasoning_effort  required: none | minimal | low | medium | high | xhigh | max
 #
 # The configured effort overrides any effort carried by the request
 # (reasoning / reasoning_effort). Models not listed here keep the request's
